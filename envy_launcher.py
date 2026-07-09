@@ -1,10 +1,10 @@
-﻿"""
-EnvyUI  v1.0.0
+"""
+EnvyUI  v1.0.1
 ==============
 A self-contained Windows launcher for the envied download engine.
 
 Calls envied directly via: uv run envied dl SERVICE URL [options]
-No vinefeeder dependency — envied is bundled in TwinVine\\ folder.
+Envied is bundled in the EnvyCore/packages folder.
 
 REQUIREMENTS
 ------------
@@ -198,21 +198,15 @@ window._envyReset = function() {{
         b64 = _b64.b64encode(combined).decode()
         self.page().runJavaScript(f"window._envyWrite && window._envyWrite('{b64}')")
 
-try:
-    import requests
-    REQUESTS_AVAILABLE = True
-except ImportError:
-    REQUESTS_AVAILABLE = False
+REQUESTS_AVAILABLE = True  # urllib.request is stdlib — always available
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 APP_NAME        = "EnvyUI"
-APP_VERSION     = "1.0.7"
-GITHUB_REPO     = "Lseauk/TwinVine-Launcher"
+APP_VERSION     = "1.0.1"
+GITHUB_REPO     = "Lseauk/EnvyUI"
 GITHUB_URL      = f"https://github.com/{GITHUB_REPO}"
-CLONE_REPO      = "Lseauk/TwinVine-Launcher-Core"
-CLONE_URL       = f"https://github.com/{CLONE_REPO}.git"
-LAUNCHER_URL    = "https://github.com/Lseauk/TwinVine-Launcher"
+LAUNCHER_URL    = "https://github.com/Lseauk/EnvyUI"
 
 # Work out the best default install directory:
 #   1. If the launcher lives inside an existing TwinVine checkout, use that.
@@ -236,7 +230,7 @@ def _detect_default_install() -> Path:
 DEFAULT_INSTALL = _detect_default_install()
 CONFIG_FILE     = Path(os.path.expanduser("~")) / ".envy_launcher.json"
 
-# Catppuccin Mocha palette (matching VineFeeder exactly)
+# Catppuccin Mocha palette
 C = {
     "bg":           "#1e1e2e",
     "surface":      "#181825",
@@ -256,20 +250,91 @@ C = {
 # ── Service definitions ──────────────────────────────────────────────────────
 
 CORE_SERVICES = [
-    {"id": "ALL4",  "label": "ALL4"},
-    {"id": "iP",    "label": "BBC iPlayer"},
-    {"id": "ITV",   "label": "ITVX"},
-    {"id": "MY5",   "label": "My5"},
-    {"id": "PLEX",  "label": "Plex"},
-    {"id": "RTE",   "label": "RTE"},
-    {"id": "STV",   "label": "STV"},
-    {"id": "TPTV",  "label": "TPTV"},
-    {"id": "TVNZ",  "label": "TVNZ"},
-    {"id": "UKTV",  "label": "U (UKTV)"},
+    {"id": "ALL4",     "label": "ALL4"},
+    {"id": "iP",       "label": "BBC iPlayer"},
+    {"id": "ITV",      "label": "ITVX"},
+    {"id": "MY5",      "label": "My5"},
+    {"id": "UKTV",     "label": "U (UKTV)"},
+    {"id": "RTE",      "label": "RTE"},
+    {"id": "STV",      "label": "STV"},
+    {"id": "TPTV",     "label": "TPTV"},
+    {"id": "RKTN",     "label": "Rakuten TV"},
+    {"id": "TUBI",     "label": "Tubi"},
+    {"id": "PLUTO",    "label": "Pluto TV"},
+    {"id": "VM",       "label": "VM Play (IE)"},
+    {"id": "TVNZ",     "label": "TVNZ"},
+    {"id": "ThreeNow", "label": "ThreeNow (NZ)"},
+    {"id": "AUBC",     "label": "ABC iView (AU)"},
+    {"id": "SEVEN",    "label": "7plus (AU)"},
+    {"id": "NINE",     "label": "9Now (AU)"},
+    {"id": "TEN",      "label": "10play (AU)"},
+    {"id": "SBS",      "label": "SBS On Demand (AU)"},
+    {"id": "ROKU",     "label": "Roku (US)"},
+    {"id": "CBS",      "label": "CBS (US)"},
+    {"id": "NBC",      "label": "NBC"},
+    {"id": "PBS",      "label": "PBS"},
+    {"id": "CWTV",     "label": "The CW (US)"},
+    {"id": "CRAV",     "label": "Crave"},
+    {"id": "CBC",      "label": "CBC Gem"},
+    {"id": "PLEX",     "label": "Plex"},
 ]
 
 # Services that support episode listing via BrowseWorker
-BROWSE_SUPPORTED = {"iP", "ALL4", "ITV", "MY5", "UKTV", "STV", "RTE", "PLUTO", "TVNZ", "NRK", "ARD", "ZDF"}
+BROWSE_SUPPORTED = {"iP", "ALL4", "CBS", "CBC", "CRAV", "CWTV", "ITV", "MY5", "UKTV", "STV", "RTE", "PLUTO", "TUBI", "TVNZ", "NINE", "NBC", "PBS", "NRK", "ARD", "ZDF", "RKTN", "VM", "ROKU", "ThreeNow", "AUBC", "SEVEN", "TEN", "SBS"}
+
+# ── CRAV token cache ─────────────────────────────────────────────────────────
+_CRAV_TOKEN_CACHE: dict = {}  # {"token": str, "expires": float}
+
+def _crav_get_graphql_token() -> str | None:
+    """Authenticate with Crave and return a base64 graphql token, or None if no credentials."""
+    import urllib.request as _ur, urllib.parse as _up, json as _json, base64 as _b64, time as _t, re as _re
+    cache = _CRAV_TOKEN_CACHE
+    if cache.get("token") and _t.time() < cache.get("expires", 0):
+        return cache["token"]
+
+    from pathlib import Path as _Path
+    cfg = load_config()
+    envied_yaml = _Path(cfg.get("install_dir", "")) / "packages" / "envied" / "src" / "envied" / "envied.yaml"
+    if not envied_yaml.exists():
+        return None
+
+    text = envied_yaml.read_text(encoding="utf-8")
+    m = _re.search(r'^\s*CRAV:\s*(.+)', text, _re.MULTILINE)
+    if not m:
+        return None
+    cred_str = m.group(1).strip()
+    # Format is email:password — split on first colon after the @ domain
+    colon_idx = cred_str.index(':', cred_str.index('@'))
+    username = cred_str[:colon_idx]
+    password = cred_str[colon_idx + 1:]
+
+    data = _up.urlencode({
+        "grant_type": "password",
+        "username":   username,
+        "password":   password,
+    }).encode()
+    req = _ur.Request(
+        "https://account.bellmedia.ca/api/login/v2.2",
+        data=data,
+        headers={
+            "User-Agent":    "Dalvik/2.1.0 (Linux; U; Android 11; SHIELD Android TV Build/RQ1A.210105.003)",
+            "Authorization": "Basic Y3JhdmUtYW5kcm9pZDpkZWZhdWx0",
+            "Content-Type":  "application/x-www-form-urlencoded",
+        },
+    )
+    with _ur.urlopen(req, timeout=20) as r:
+        tokens = _json.loads(r.read().decode())
+
+    access_token = tokens["access_token"]
+    graphql_token = _b64.b64encode(_json.dumps({
+        "platform":    "platform_androidtv",
+        "accessToken": access_token,
+    }).encode()).decode()
+
+    cache["token"]   = graphql_token
+    cache["expires"] = _t.time() + tokens.get("expires_in", 3600) - 30
+    return graphql_token
+
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -1285,6 +1350,72 @@ class FetchTracksWorker(QThread):
             self.error.emit(str(e))
 
 
+def _rktn_pair_device() -> dict:
+    """Login to gizmo.rakuten.tv and return session fields needed for API calls.
+    Reads RKTN credentials from envied.yaml. Raises RuntimeError on failure."""
+    import json as _json, urllib.request as _req, urllib.parse as _up
+    from pathlib import Path as _P
+    cfg = load_config()
+    yaml_path = _P(cfg.get("install_dir", "")) / "packages/envied/src/envied/envied.yaml"
+    username = password = ""
+    try:
+        for line in yaml_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line.startswith("RKTN:"):
+                cred = line.split(":", 1)[1].strip()
+                if ":" in cred:
+                    username, password = cred.split(":", 1)
+                break
+    except Exception:
+        pass
+    if not username or not password:
+        raise RuntimeError(
+            "Rakuten TV credentials not found in Envied Config.\n"
+            "Add your Rakuten TV email and password under the RKTN entry."
+        )
+    device_serial = "3187ad6c-4d1c-4cbb-9c59-8396d054eb2a"
+    post_data = _up.urlencode({
+        "app_version": "3.22.0",
+        "device_metadata[uid]": device_serial,
+        "device_metadata[os]": "Android",
+        "device_metadata[model]": "SM-A105FN",
+        "device_metadata[year]": "2021",
+        "device_metadata[trusted_uid]": "false",
+        "device_metadata[brand]": "Samsung",
+        "device_metadata[app_version]": "3.22.0",
+        "device_serial": device_serial,
+        "device_metadata[serial_number]": device_serial,
+        "classification_id": "69",
+        "user[username]": username,
+        "user[password]": password,
+    }).encode()
+    req = _req.Request(
+        "https://gizmo.rakuten.tv/v3/me/login_or_wuaki_link?device_identifier=android",
+        data=post_data,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Linux; Android 11; SM-A105FN) AppleWebKit/537.36",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Origin": "https://rakuten.tv",
+        },
+        method="POST",
+    )
+    with _req.urlopen(req, timeout=20) as resp:
+        res = _json.loads(resp.read().decode("utf-8"))
+    if "errors" in res:
+        err = res["errors"][0]
+        raise RuntimeError(f"Rakuten TV login failed: {err.get('message', err)}")
+    d = res["data"]
+    return {
+        "session_uuid":       d["user"]["session_uuid"],
+        "access_token":       d["user"]["access_token"],
+        "classification_id":  str(d["user"]["profile"]["classification"]["id"]),
+        "market_code":        d["market"]["code"],
+        "locale":             d["market"]["locale"],
+        "device_identifier":  "android",
+        "device_serial":      device_serial,
+    }
+
+
 class SearchWorker(QThread):
     """Searches a streaming service for shows matching a keyword."""
     results_ready = pyqtSignal(list)   # list of {title, url, synopsis}
@@ -1334,6 +1465,22 @@ class SearchWorker(QThread):
             elif svc == "RTE":   results = self._rte(qt)
             elif svc == "UKTV":  results = self._uktv(qt)
             elif svc == "PLUTO": results = self._pluto(self._term)
+            elif svc == "TUBI":  results = self._tubi_search(self._term)
+            elif svc == "NINE":  results = self._nine_search(self._term)
+            elif svc == "NBC":   results = self._nbc_search(self._term)
+            elif svc == "RKTN":  results = self._rktn_search(self._term)
+            elif svc == "VM":    results = self._vm_search(self._term)
+            elif svc == "ROKU":  results = self._roku_search(self._term)
+            elif svc == "CBS":   results = self._cbs_search(self._term)
+            elif svc == "CWTV":  results = self._cwtv_search(self._term)
+            elif svc == "PBS":   results = self._pbs_search(self._term)
+            elif svc == "CRAV":  results = self._crav_search(self._term)
+            elif svc == "CBC":   results = self._cbc_search(self._term)
+            elif svc == "ThreeNow": results = self._threenow_search(self._term)
+            elif svc == "AUBC":    results = self._aubc_search(self._term)
+            elif svc == "SEVEN":   results = self._seven_search(self._term)
+            elif svc == "TEN":     results = self._ten_search(self._term)
+            elif svc == "SBS":     results = self._sbs_search(self._term)
             else:
                 self.error.emit(f"Search not available for {svc}.")
                 return
@@ -1401,7 +1548,7 @@ class SearchWorker(QThread):
             if not title:
                 continue
             # Use officialFormat (e.g. "10/5961/0001") and replace "/" with "a"
-            # This gives the full episode ID including episode number, matching vinefeeder
+            # officialFormat e.g. "10/5961/0001" — replace "/" with "a" for the episode ID
             official = d.get("legacyId", {}).get("officialFormat", "")
             _id = official.replace("/", "a")
             # Slug: simple space→dash, no case-changing of special chars
@@ -1735,6 +1882,685 @@ class SearchWorker(QThread):
             })
         return out
 
+    @staticmethod
+    def _tubi_cookies() -> tuple[str, str | None]:
+        """
+        Read tubitv.com cookies from EnvyCore/Cookies/Tubi.txt.
+        Returns (cookie_header_string, at_token_or_None).
+        Raises RuntimeError with a user-friendly message if unusable.
+        """
+        import base64 as _b64, json as _json, time as _time
+        from pathlib import Path as _P
+        cfg = load_config()
+        cookie_file = _P(cfg.get("install_dir", "")) / "Cookies" / "Tubi.txt"
+        if not cookie_file.exists():
+            raise RuntimeError(
+                "Tubi search requires a cookie file.\n"
+                "Log in to tubitv.com in your browser, export cookies to a file named "
+                "Tubi.txt and place it in EnvyCore/Cookies/."
+            )
+        pairs: list[str] = []
+        at_token: str | None = None
+        try:
+            for line in cookie_file.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("\t")
+                if len(parts) < 7:
+                    continue
+                domain, _, _, _, _, name, value = parts[0], parts[1], parts[2], parts[3], parts[4], parts[5], parts[6]
+                if "tubitv.com" not in domain:
+                    continue
+                pairs.append(f"{name}={value}")
+                if name == "at":
+                    at_token = value
+        except Exception as exc:
+            raise RuntimeError(f"Could not read Tubi.txt: {exc}") from exc
+        if not pairs:
+            raise RuntimeError(
+                "Tubi.txt does not contain any tubitv.com cookies.\n"
+                "Log in to tubitv.com in your browser and re-export the cookies."
+            )
+        # Check if the `at` JWT has expired
+        if at_token:
+            try:
+                payload_b64 = at_token.split(".")[1]
+                payload_b64 += "=" * (-len(payload_b64) % 4)
+                exp = _json.loads(_b64.urlsafe_b64decode(payload_b64)).get("exp", 0)
+                if exp and exp < _time.time():
+                    raise RuntimeError(
+                        "Your Tubi cookie (at= token) has expired.\n"
+                        "Log in to tubitv.com in your browser and re-export the cookies, "
+                        "then replace EnvyCore/Cookies/Tubi.txt with the new file."
+                    )
+            except RuntimeError:
+                raise
+            except Exception:
+                pass  # If JWT decode fails, try anyway
+        return "; ".join(pairs), at_token
+
+    def _tubi_search(self, term: str) -> list:
+        import urllib.parse as _up
+        cookie_hdr, at_token = self._tubi_cookies()
+        params = _up.urlencode({
+            "search":            term,
+            "include_linear":    "false",
+            "include_channels":  "false",
+            "is_kids_mode":      "false",
+        })
+        hdrs = {"Cookie": cookie_hdr}
+        if at_token:
+            hdrs["Authorization"] = f"Bearer {at_token}"
+        data = self._fetch_json(
+            f"https://search.production-public.tubi.io/api/v2/search?{params}",
+            headers=hdrs,
+        )
+        contents = data.get("contents") or {}
+        # Use containers ordering — this is the relevance-ranked display order
+        containers = data.get("containers") or []
+        if isinstance(containers, dict):
+            containers = [containers]
+        ordered_ids = []
+        for container in containers:
+            ordered_ids.extend(container.get("children") or [])
+        # Fall back to contents insertion order if containers is empty
+        if not ordered_ids:
+            ordered_ids = list(contents.keys())
+        out = []
+        seen: set = set()
+        for cid in ordered_ids:
+            item = contents.get(cid)
+            if item is None:
+                continue
+            content_id = item.get("id", "")
+            if content_id in seen:
+                continue
+            seen.add(content_id)
+            kind_code = item.get("type", "s")
+            url = (f"https://tubitv.com/movies/{content_id}"
+                   if kind_code == "v" else
+                   f"https://tubitv.com/series/{content_id}")
+            out.append({
+                "title":    item.get("title", content_id),
+                "synopsis": item.get("description", ""),
+                "url":      url,
+            })
+        return out
+
+    def _nine_search(self, term: str) -> list:
+        import urllib.parse as _up
+        from urllib.parse import urljoin as _urljoin
+        params = _up.urlencode({"q": term.strip(), "device": "web"})
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://www.9now.com.au",
+            "Referer": "https://www.9now.com.au/",
+        }
+        data = self._fetch_json(
+            f"https://tv-api.9now.com.au/v2/pages/search?{params}",
+            headers=headers,
+        )
+        out = []
+        seen: set = set()
+        for group in data.get("results", []):
+            if group.get("title") != "Search results":
+                continue
+            for result in group.get("items", []):
+                link = result.get("link") or {}
+                web_url = link.get("webUrl")
+                if result.get("type") != "tv-series" or not web_url:
+                    continue
+                url = _urljoin("https://www.9now.com.au", web_url)
+                if url in seen:
+                    continue
+                seen.add(url)
+                out.append({
+                    "title":    result.get("name") or result.get("displayName", ""),
+                    "synopsis": result.get("description", ""),
+                    "url":      url,
+                })
+        return out
+
+    def _nbc_search(self, term: str) -> list:
+        import json as _json, urllib.parse as _up
+        algolia_url  = "https://3nkvntt7f3-dsn.algolia.net/1/indexes/*/queries"
+        app_id       = "3NKVNTT7F3"
+        api_key      = "c2df90d0ff616a2726139c671d6e6e8e"
+        index        = "prod_multi-brand-unified-web"
+        facet_filters = _json.dumps([["algoliaProperties.entityType:series",
+                                       "algoliaProperties.entityType:episodes"]])
+        params = _up.urlencode({
+            "query":        term,
+            "facetFilters": facet_filters,
+            "page":         0,
+            "hitsPerPage":  20,
+        })
+        data = self._fetch_json(
+            algolia_url,
+            headers={
+                "User-Agent":              "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                "Origin":                  "https://www.nbc.com",
+                "Referer":                 "https://www.nbc.com/",
+                "x-algolia-api-key":       api_key,
+                "x-algolia-application-id": app_id,
+            },
+            post_json={"requests": [{"indexName": index, "params": params}]},
+        )
+        out = []
+        for hit in (data.get("results") or [{}])[0].get("hits") or []:
+            entity_type = (hit.get("algoliaProperties") or {}).get("entityType")
+            if entity_type == "series":
+                series_data = hit.get("series") or {}
+                slug = series_data.get("urlAlias") or series_data.get("seriesName")
+                if not slug:
+                    continue
+                out.append({
+                    "title":    series_data.get("shortTitle") or slug,
+                    "synopsis": series_data.get("shortDescription", ""),
+                    "url":      f"https://www.nbc.com/{slug}",
+                })
+            elif entity_type == "episodes":
+                ep_data    = hit.get("episegment") or {}
+                video      = hit.get("video") or {}
+                series_data = hit.get("series") or {}
+                permalink  = (video.get("permalink") or "").replace("http://", "https://")
+                if not permalink:
+                    continue
+                out.append({
+                    "title":    ep_data.get("title") or "(untitled)",
+                    "synopsis": ep_data.get("shortDescription", ""),
+                    "url":      permalink,
+                })
+        return out
+
+    def _rktn_search(self, term: str) -> list:
+        import urllib.parse as _up
+        base = {
+            "classification_id":      "18",
+            "device_identifier":      "web",
+            "locale":                 "en",
+            "market_code":            "uk",
+            "page":                   "1",
+            "per_page":               "36",
+            "personalization_consent": "true",
+            "query":                  term,
+            "search_engine":          "external",
+        }
+        out  = []
+        seen = set()
+        for content_type in ("movies", "tv_shows"):
+            try:
+                qs    = _up.urlencode(base)
+                data  = self._fetch_json(f"https://gizmo.rakuten.tv/v3/{content_type}?{qs}")
+                items = data.get("data") or []
+                if not isinstance(items, list):
+                    continue
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    permalink = item.get("id") or item.get("permalink", "")
+                    if not permalink:
+                        continue
+                    url_key = f"{content_type}/{permalink}"
+                    if url_key in seen:
+                        continue
+                    seen.add(url_key)
+                    out.append({
+                        "title":    item.get("title", permalink),
+                        "synopsis": item.get("short_plot") or item.get("plot", ""),
+                        "url":      f"https://www.rakuten.tv/uk/{content_type}/{permalink}",
+                    })
+            except Exception:
+                continue
+        return out
+
+
+    def _roku_search(self, term: str) -> list:
+        import urllib.request as _ur, json as _json, re as _re, http.cookiejar as _cj
+        HDRS = {
+            "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept":          "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Origin":          "https://therokuchannel.roku.com",
+            "Referer":         "https://therokuchannel.roku.com/",
+        }
+        jar    = _cj.CookieJar()
+        opener = _ur.build_opener(_ur.HTTPCookieProcessor(jar))
+
+        def _get(url, extra=None):
+            req = _ur.Request(url, headers={**HDRS, **(extra or {})})
+            with opener.open(req, timeout=20) as r:
+                raw = r.read()
+                if not raw.strip():
+                    raise RuntimeError("Roku is geofenced to the US — a US VPN is required")
+                return _json.loads(raw.decode("utf-8"))
+
+        def _post(url, payload, extra=None):
+            hdrs = {**HDRS, "Content-Type": "application/json", **(extra or {})}
+            req  = _ur.Request(url, data=_json.dumps(payload).encode(), headers=hdrs, method="POST")
+            with opener.open(req, timeout=20) as r:
+                return _json.loads(r.read().decode("utf-8"))
+
+        def _slugify(s):
+            return _re.sub(r"[^a-z0-9]+", "-", str(s).lower()).strip("-") or "title"
+
+        # Visit homepage first to establish session cookies (required for valid CSRF)
+        opener.open(_ur.Request("https://therokuchannel.roku.com/", headers=HDRS))
+
+        token   = _get("https://therokuchannel.roku.com/api/v1/csrf").get("csrf", "")
+        results = _post(
+            "https://therokuchannel.roku.com/api/v1/search",
+            {"query": term},
+            {"csrf-token": token},
+        )
+        out = []
+        for item in results.get("view") or []:
+            c     = item.get("content") or {}
+            ctype = c.get("type", "")
+            if ctype in ("zone", "provider"):
+                continue
+            cid = (c.get("meta") or {}).get("id", "")
+            if not cid:
+                continue
+            title    = c.get("title") or cid
+            desc_obj = c.get("descriptions") or {}
+            synopsis = (desc_obj.get("250") or {}).get("text") or ""
+            # Encode type in URL so _on_show_selected can route without an extra API call
+            type_seg = "movie" if ctype in ("movie", "tvspecial") else "series"
+            out.append({
+                "title":    title,
+                "synopsis": synopsis,
+                "url":      f"https://therokuchannel.roku.com/details/{cid}/{type_seg}/{_slugify(title)}",
+            })
+        return out
+
+    def _cbs_search(self, term: str) -> list:
+        import urllib.request as _ur, json as _json, urllib.parse as _up
+        BASE  = "https://cbsdigital.cbs.com"
+        TOKEN = "ABBsaBMagMmYLUc9iXB0lXEKsUQ0/MwRn6z3Tg0KKQaH7Q6QGqJcABwlBP4XiMR1b0Q="
+        HDRS  = {
+            "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-A536E) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36",
+            "Accept":     "application/json",
+        }
+        qs   = _up.urlencode({"at": TOKEN, "term": term, "termCount": "50", "showCanVids": "true"})
+        req  = _ur.Request(f"{BASE}/apps-api/v3.1/androidphone/contentsearch/search.json?{qs}", headers=HDRS)
+        with _ur.urlopen(req, timeout=20) as r:
+            data = _json.loads(r.read().decode("utf-8"))
+        out = []
+        for result in data.get("terms") or []:
+            path  = result.get("path") or ""
+            title = result.get("title") or path
+            label = result.get("term_type") or ""
+            if not path or label.lower() in ("cast", "topic", "genre"):
+                continue
+            url = path if path.startswith("http") else f"https://www.cbs.com/{path.lstrip('/')}"
+            out.append({"title": title, "synopsis": label, "url": url})
+        return out
+
+    def _cwtv_search(self, term: str) -> list:
+        import urllib.request as _ur, json as _json, urllib.parse as _up
+        HDRS = {"User-Agent": "Mozilla/5.0 (Linux; Android 11; Smart TV Build/AR2101; wv)",
+                "Accept": "application/json"}
+        qs  = _up.urlencode({"q": term, "format": "json2", "service": "t", "cwuid": "8195356001251527455"})
+        req = _ur.Request(f"https://www.cwtv.com/search/?{qs}", headers=HDRS)
+        with _ur.urlopen(req, timeout=20) as r:
+            data = _json.loads(r.read().decode("utf-8"))
+        out = []
+        for item in data.get("items") or []:
+            kind = item.get("type", "")
+            if kind not in ("shows", "series", "movies"):
+                continue
+            slug = item.get("show_slug") or ""
+            if not slug:
+                continue
+            video_type = "movies" if kind == "movies" else "shows"
+            out.append({
+                "title":    item.get("title") or slug,
+                "synopsis": item.get("description_long") or "",
+                "url":      f"https://www.cwtv.com/{video_type}/{slug}",
+            })
+        return out
+
+    def _pbs_search(self, term: str) -> list:
+        return self._pbs_graphql(title=term, genre=None, first=20, ordering="POPULAR")
+
+    @staticmethod
+    def _pbs_graphql(title="", genre=None, first=50, ordering="POPULAR", paginate=False) -> list:
+        import urllib.request as _ur, json as _json
+        HDRS = {
+            "User-Agent":            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+            "Content-Type":          "application/json",
+            "Accept":                "*/*",
+            "Origin":                "https://www.pbs.org",
+            "Referer":               "https://www.pbs.org/",
+            "x-pbs-platform":        "pbsorg",
+            "x-pbs-platform-version":"1.0",
+            "x-pbs-station-id":      "7387eb2c-e0ce-4069-82d9-08865df87edf",
+        }
+        GQL = (
+            "query SearchShowsQuery($first:Int!,$ordering:AllShowsOrdering!,$title:String,"
+            "$genre:Genre,$source:AllShowsSource,$after:String){"
+            "searchShows(first:$first ordering:$ordering title:$title genre:$genre source:$source after:$after){"
+            "edges{node{description:descriptionLong genre title slug}}"
+            "pageInfo{hasNextPage endCursor}}}"
+        )
+
+        def _fetch(after=None):
+            payload = _json.dumps({
+                "query":     GQL,
+                "variables": {"first": first, "ordering": ordering, "title": title or "",
+                              "genre": genre, "source": None, "after": after},
+            }).encode("utf-8")
+            req = _ur.Request("https://content.services.pbs.org/graphql/", data=payload, headers=HDRS)
+            with _ur.urlopen(req, timeout=20) as r:
+                data = _json.loads(r.read().decode("utf-8"))
+            return (data.get("data") or {}).get("searchShows") or {}
+
+        out    = []
+        seen   = set()
+        cursor = None
+        while True:
+            result = _fetch(cursor)
+            for edge in result.get("edges") or []:
+                node   = edge.get("node") or {}
+                slug   = node.get("slug") or ""
+                title_ = node.get("title") or slug
+                if not slug or slug in seen:
+                    continue
+                seen.add(slug)
+                out.append({
+                    "title":    title_,
+                    "synopsis": node.get("description") or "",
+                    "url":      f"https://www.pbs.org/show/{slug}/",
+                })
+            page_info = result.get("pageInfo") or {}
+            if not paginate or not page_info.get("hasNextPage"):
+                break
+            cursor = page_info.get("endCursor")
+            if not cursor:
+                break
+        return out
+
+    def _crav_search(self, term: str) -> list:
+        import urllib.request as _ur, json as _json
+        token = _crav_get_graphql_token()
+        if not token:
+            raise RuntimeError("No CRAV credentials found. Add username/password to EnvyCore/Cookies/CRAV.txt (username on line 1, password on line 2).")
+        HDRS = {
+            "User-Agent":    "Dalvik/2.1.0 (Linux; U; Android 11; SHIELD Android TV Build/RQ1A.210105.003)",
+            "Content-Type":  "application/json",
+            "Accept":        "*/*",
+            "authorization": f"Bearer {token}",
+        }
+        GQL = (
+            "query GetSearch($sessionContext:SessionContext!,$searchQuery:String!,$pageNumber:Int!,$pageSize:Int!,$collection:SearchCollectionType!){"
+            "search(sessionContext:$sessionContext searchRequest:{searchQuery:$searchQuery pageNumber:$pageNumber pageSize:$pageSize collection:$collection}){"
+            "mediaResults{...on MediaMetadata{id title path mediaType shortDescription}}}}"
+        )
+        payload = _json.dumps({
+            "query": GQL,
+            "variables": {
+                "searchQuery":   term,
+                "pageSize":      20,
+                "pageNumber":    1,
+                "collection":    "MEDIAS",
+                "sessionContext": {"userMaturity": "ADULT", "userLanguage": "EN"},
+            },
+        }).encode()
+        req = _ur.Request("https://rte-api.bellmedia.ca/graphql", data=payload, headers=HDRS)
+        with _ur.urlopen(req, timeout=20) as r:
+            data = _json.loads(r.read().decode())
+        out = []
+        for node in (data.get("data") or {}).get("search", {}).get("mediaResults") or []:
+            path  = node.get("path") or ""
+            title = node.get("title") or ""
+            if not path or not title:
+                continue
+            out.append({
+                "title":    title,
+                "synopsis": node.get("shortDescription") or "",
+                "url":      f"https://www.crave.ca/{path.lstrip('/')}",
+            })
+        return out
+
+    def _cbc_search(self, term: str) -> list:
+        import urllib.request as _ur, urllib.parse as _up, json as _json
+        BASE = "https://services.radio-canada.ca"
+        qs = _up.urlencode({"device": "web", "pageNumber": 1, "pageSize": 20, "term": term})
+        req = _ur.Request(f"{BASE}/ott/catalog/v1/gem/search?{qs}",
+                          headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
+        with _ur.urlopen(req, timeout=20) as r:
+            data = _json.loads(r.read().decode())
+        out = []
+        for item in (data.get("result") or []):
+            url   = item.get("url") or ""
+            title = item.get("title") or ""
+            if not url or not title:
+                continue
+            if not url.startswith("http"):
+                url = f"https://gem.cbc.ca/{url.lstrip('/')}"
+            out.append({"title": title, "synopsis": item.get("description") or "", "url": url})
+        return out
+
+    def _threenow_search(self, term: str) -> list:
+        import urllib.request as _ur, json as _json
+        req = _ur.Request(
+            "https://now-api.fullscreen.nz/v5/shows",
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+        )
+        with _ur.urlopen(req, timeout=20) as r:
+            data = _json.loads(r.read().decode())
+        term_l = term.lower()
+        out = []
+        for show in (data.get("shows") or []):
+            title = show.get("name") or ""
+            if term_l not in title.lower():
+                continue
+            show_id = show.get("showId") or ""
+            if not show_id:
+                continue
+            out.append({
+                "title":    title,
+                "synopsis": "",
+                "url":      f"https://www.threenow.co.nz/shows/{show_id}",
+            })
+        return out
+
+    def _aubc_search(self, term: str) -> list:
+        import urllib.request as _ur, urllib.parse as _up, json as _json
+        url = (
+            "https://y63q32nvdl-1.algolianet.com/1/indexes/*/queries"
+            "?x-algolia-api-key=bcdf11ba901b780dc3c0a3ca677fbefc"
+            "&x-algolia-application-id=Y63Q32NVDL"
+        )
+        payload = _json.dumps({
+            "requests": [{
+                "indexName": "ABC_production_iview_web",
+                "params": f"query={_up.quote(term)}&tagFilters=",
+            }]
+        }).encode()
+        req = _ur.Request(url, data=payload, method="POST",
+                          headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"})
+        with _ur.urlopen(req, timeout=20) as r:
+            data = _json.loads(r.read().decode())
+        out = []
+        for hit in (data.get("results") or [{}])[0].get("hits") or []:
+            if hit.get("docType") != "Program":
+                continue
+            slug = hit.get("slug") or ""
+            title = hit.get("title") or ""
+            if not slug or not title:
+                continue
+            out.append({
+                "title":    title,
+                "synopsis": hit.get("synopsis") or "",
+                "url":      f"https://iview.abc.net.au/show/{slug}",
+            })
+        return out
+
+    def _seven_search(self, term: str) -> list:
+        import urllib.request as _ur, urllib.parse as _up, json as _json
+        HDRS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json",
+                "x-swm-apikey": "kGcrNnuPClrkynfnKwG8IA/NhVG6ut5nPEdWF2jscvE="}
+        # Get market_id
+        mreq = _ur.Request("https://market-cdn.swm.digital/v1/market/ip?apikey=web", headers=HDRS)
+        try:
+            with _ur.urlopen(mreq, timeout=8) as r:
+                market_id = _json.loads(r.read().decode()).get("_id", 4)
+        except Exception:
+            market_id = 4
+        qs = _up.urlencode({
+            "searchTerm": term, "market-id": market_id,
+            "api-version": "4.4", "platform-id": "androidtv", "platform-version": "5.25.0.0",
+        })
+        req = _ur.Request(f"https://searchapi.swm.digital/3.0/api/Search?{qs}", headers=HDRS)
+        with _ur.urlopen(req, timeout=20) as r:
+            results = _json.loads(r.read().decode())
+        out = []
+        for item in (results if isinstance(results, list) else []):
+            title = (item.get("image") or {}).get("altTag") or ""
+            slug  = (item.get("contentLink") or {}).get("url") or ""
+            if not title or not slug:
+                continue
+            out.append({
+                "title":    title,
+                "synopsis": item.get("description") or "",
+                "url":      f"https://7plus.com.au{slug}",
+            })
+        return out
+
+    @staticmethod
+    def _ten_brace_extract(html: str, marker: str) -> dict | None:
+        """Find `marker` in html, then brace-balance extract the JSON object that follows."""
+        import json as _json
+        idx = html.find(marker)
+        if idx < 0:
+            return None
+        try:
+            json_start = html.index('{', idx)
+        except ValueError:
+            return None
+        depth, json_end = 0, json_start
+        for i, ch in enumerate(html[json_start:], json_start):
+            if ch == '{':   depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    json_end = i + 1
+                    break
+        try:
+            return _json.loads(html[json_start:json_end])
+        except Exception:
+            return None
+
+    @staticmethod
+    def _ten_shows_from_data(data: dict) -> list:
+        """Pull show list from either showsPageData or searchLandingPageData."""
+        out = []
+        # showsPageData → .shows[].{name, url}
+        # searchLandingPageData → .results[].{name, url}
+        items = data.get("shows") or data.get("results") or []
+        for show in items:
+            name = show.get("name") or show.get("title") or ""
+            url  = show.get("url") or ""
+            if name and url:
+                out.append({"title": name,
+                            "synopsis": show.get("abstractShowDescription") or "",
+                            "url": url})
+        return out
+
+    def _ten_search(self, term: str) -> list:
+        import urllib.request as _ur, urllib.parse as _up
+        HDRS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,*/*"}
+        req = _ur.Request("https://10.com.au/search?" + _up.urlencode({"query": term}), headers=HDRS)
+        with _ur.urlopen(req, timeout=20) as r:
+            html = r.read().decode("utf-8", errors="replace")
+        data = SearchWorker._ten_brace_extract(html, "searchLandingPageData = ")
+        if not data:
+            return []
+        out = []
+        for item in (data.get("results") or []):
+            if item.get("contentType") != "shows":
+                continue
+            title = item.get("headline") or ""
+            link = item.get("link") or ""
+            if not title or not link:
+                continue
+            out.append({"title": title,
+                        "synopsis": "",
+                        "url": f"https://10.com.au{link}"})
+        return out
+
+    def _sbs_search(self, term: str) -> list:
+        import urllib.request as _ur, urllib.parse as _up, json as _json
+        HDRS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "application/json", "Origin": "https://www.sbs.com.au"}
+        req = _ur.Request("https://content-search.pr.sbsod.com/catalogue?" + _up.urlencode({"q": term}), headers=HDRS)
+        with _ur.urlopen(req, timeout=20) as r:
+            data = _json.loads(r.read().decode())
+        out = []
+        for item in (data.get("items") or []):
+            if item.get("entityType") != "TV_SERIES":
+                continue
+            slug = item.get("slug") or ""
+            title = item.get("title") or ""
+            if not slug or not title:
+                continue
+            out.append({"title": title,
+                        "synopsis": item.get("description") or "",
+                        "url": f"https://www.sbs.com.au/ondemand/tv-series/{slug}"})
+        return out
+
+    def _vm_search(self, term: str) -> list:
+        import urllib.parse as _up, re as _re
+        qs = _up.urlencode({
+            "key":      "821254297041614280861178657602",
+            "cc":       "IE",
+            "lang":     "en",
+            "platform": "chrome",
+            "q":        term,
+        })
+        data = self._fetch_json(
+            f"https://v6-metadata-cf.simplestreamcdn.com/api/search?{qs}",
+            {"Origin": "https://play.virginmediatelevision.ie",
+             "Referer": "https://play.virginmediatelevision.ie/"},
+        )
+        out  = []
+        seen = set()
+
+        def _slugify(s):
+            return _re.sub(r"[^a-z0-9]+", "-", str(s).lower()).strip("-") or "title"
+
+        for section in (data.get("response") or {}).get("sections") or []:
+            for item in section.get("tiles") or []:
+                if not isinstance(item, dict):
+                    continue
+                series_id = item.get("series_id") or (item.get("id") if item.get("type") not in ("vod", "replay", "episode") else None)
+                video_id  = item.get("uvid") or item.get("video_id") or item.get("content_id") or item.get("asset_id")
+                title     = item.get("title") or item.get("name") or ""
+                synopsis  = item.get("synopsis") or item.get("description") or ""
+
+                if series_id and str(series_id) not in seen:
+                    seen.add(str(series_id))
+                    slug = _slugify(title)
+                    out.append({
+                        "title":    title,
+                        "synopsis": synopsis,
+                        "url":      f"https://play.virginmediatelevision.ie/shows/{series_id}/{slug}",
+                    })
+                elif video_id and str(video_id) not in seen:
+                    seen.add(str(video_id))
+                    slug = _slugify(title)
+                    out.append({
+                        "title":    title,
+                        "synopsis": synopsis,
+                        "url":      f"https://play.virginmediatelevision.ie/watch/vod/{video_id}/{slug}",
+                    })
+        return out
+
 
 class CategoryWorker(QThread):
     """Fetches the list of browse categories for a service."""
@@ -1757,7 +2583,7 @@ class CategoryWorker(QThread):
         if headers:
             hdrs.update(headers)
         req = urllib.request.Request(url, headers=hdrs)
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with urllib.request.urlopen(req, timeout=45) as resp:
             raw = resp.read()
             if resp.headers.get("Content-Encoding") == "gzip":
                 raw = _gz.decompress(raw)
@@ -1785,6 +2611,62 @@ class CategoryWorker(QThread):
                 cats = self._tvnz()
             elif svc == "TPTV":
                 cats = self._tptv()
+            elif svc == "TUBI":
+                cats = self._tubi()
+            elif svc == "PLUTO":
+                cats = self._pluto()
+            elif svc == "NINE":
+                cats = self._nine()
+            elif svc == "NBC":
+                cats = self._nbc()
+            elif svc == "RKTN":
+                cats = self._rktn()
+            elif svc == "RKTN:movies":
+                cats = self._rktn_genres("movies")
+            elif svc == "RKTN:tv_shows":
+                cats = self._rktn_genres("tv_shows")
+            elif svc == "CRAV:shows":
+                cats = self._crav_genres("shows")
+            elif svc == "CRAV:movies":
+                cats = self._crav_genres("movies")
+            elif svc == "VM":
+                cats = self._vm()
+            elif svc == "ROKU":
+                cats = self._roku()
+            elif svc == "CBS":
+                cats = self._cbs()
+            elif svc == "CWTV":
+                cats = self._cwtv()
+            elif svc == "PBS":
+                cats = self._pbs()
+            elif svc == "CRAV":
+                cats = self._crav()
+            elif svc == "CBC":
+                cats = self._cbc()
+            elif svc == "ThreeNow":
+                cats = self._threenow()
+            elif svc == "AUBC":
+                cats = self._aubc()
+            elif svc == "SEVEN":
+                cats = self._seven()
+            elif svc == "TEN":
+                cats = self._ten()
+            elif svc == "SBS":
+                cats = self._sbs()
+            elif svc == "SBS:tv":
+                cats = self._sbs_tv()
+            elif svc == "SBS:movies":
+                cats = self._sbs_movies()
+            elif svc == "SEVEN:shows":
+                cats = self._seven_shelves("shows")
+            elif svc == "SEVEN:movies":
+                cats = self._seven_shelves("movies")
+            elif svc == "CBC:shows":
+                cats = self._cbc_genres("shows")
+            elif svc == "CBC:films":
+                cats = self._cbc_genres("films")
+            elif svc == "CBC:kids":
+                cats = self._cbc_genres("kids")
             else:
                 self.error.emit(
                     f"Category browsing is not yet supported for {svc}.\n"
@@ -1809,7 +2691,7 @@ class CategoryWorker(QThread):
         ]
 
     def _all4(self) -> list:
-        # Hardcoded from vinefeeder ALL4 config.yaml — channel4.com category page URLs
+        # channel4.com category page URLs
         return [
             {"name": "Film",                     "id": "https://www.channel4.com/categories/film"},
             {"name": "Documentary",              "id": "https://www.channel4.com/categories/documentaries"},
@@ -1824,7 +2706,7 @@ class CategoryWorker(QThread):
         ]
 
     def _itvx(self) -> list:
-        # Hardcoded from vinefeeder ITVX config.yaml — ITV collection page URLs
+        # ITV collection page URLs
         return [
             {"name": "Films",                "id": "https://www.itv.com/watch/collections/make-it-a-movie-night/2CIASIVXkb4A6R1XxJ4s1f"},
             {"name": "Top Picks",            "id": "https://www.itv.com/watch/collections/top-picks/51Ry6KaT5pg9HYDJ8AqPwk"},
@@ -1840,7 +2722,7 @@ class CategoryWorker(QThread):
         ]
 
     def _my5(self) -> list:
-        # Hardcoded from vinefeeder MY5 config.yaml — corona search API URLs with subgenre IDs
+        # My5 corona search API URLs with subgenre IDs
         return [
             {"name": "Films",               "id": "https://corona.channel5.com/shows/search.json?platform=my5desktop&friendly=1&vod_subgenres%5B%5D=6100117389032&vod_subgenres%5B%5D=6100117390032&vod_subgenres%5B%5D=6100117391032"},
             {"name": "Documentary",         "id": "https://corona.channel5.com/shows/search.json?platform=my5desktop&friendly=1&vod_subgenres[]=6100110273032&vod_subgenres[]=6100105092032&vod_subgenres[]=6100105093032&vod_subgenres[]=6100105094032&vod_subgenres[]=6100105095032"},
@@ -1857,7 +2739,7 @@ class CategoryWorker(QThread):
         ]
 
     def _uktv(self) -> list:
-        # Genres and channels from u.co.uk — vinefeeder had no working category list for UKTV
+        # Genres and channels from u.co.uk
         return [
             {"name": "Comedy",              "id": "https://u.co.uk/genre/comedy"},
             {"name": "Documentaries",       "id": "https://u.co.uk/genre/documentaries"},
@@ -1884,7 +2766,7 @@ class CategoryWorker(QThread):
         ]
 
     def _stv(self) -> list:
-        # Hardcoded from vinefeeder STV config.yaml — player.stv.tv category page URLs
+        # player.stv.tv category page URLs
         return [
             {"name": "Films",               "id": "https://player.stv.tv/categories/movies"},
             {"name": "Sport",               "id": "https://player.stv.tv/categories/the-sport-hub"},
@@ -1925,7 +2807,7 @@ class CategoryWorker(QThread):
         ]
 
     def _tvnz(self) -> list:
-        # Hardcoded from vinefeeder TVNZ config.yaml — edge API category URLs
+        # TVNZ edge API category URLs
         return [
             {"name": "Drama",               "id": "https://apis-edge-prod.tech.tvnz.co.nz/api/v1/web/play/page/categories/drama"},
             {"name": "Home and Living",     "id": "https://apis-edge-prod.tech.tvnz.co.nz/api/v1/web/play/page/categories/home-and-living"},
@@ -1940,6 +2822,448 @@ class CategoryWorker(QThread):
             {"name": "Comedy",              "id": "https://apis-edge-prod.tech.tvnz.co.nz/api/v1/web/play/page/categories/comedy"},
         ]
 
+    def _pluto(self) -> list:
+        import uuid as _uuid, urllib.parse as _up
+        boot_qs = _up.urlencode({
+            "appName": "web", "appVersion": "na",
+            "clientID": str(_uuid.uuid1()), "deviceDNT": 0,
+            "deviceId": "unknown", "clientModelNumber": "na",
+            "serverSideAds": "false", "deviceMake": "unknown",
+            "deviceModel": "web", "deviceType": "web",
+            "deviceVersion": "unknown", "sid": str(_uuid.uuid1()),
+        })
+        boot  = self._fetch_json(f"https://boot.pluto.tv/v4/start?{boot_qs}")
+        token = boot.get("sessionToken", "")
+        params = _up.urlencode({"appName": "web", "appVersion": "na",
+                                "clientID": str(_uuid.uuid1()), "deviceType": "web"})
+        data = self._fetch_json(
+            f"https://service-vod.clusters.pluto.tv/v3/vod/categories?{params}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        return [
+            {"name": cat.get("name", cat.get("_id", "")), "id": cat.get("_id", "")}
+            for cat in (data.get("categories") or [])
+            if cat.get("_id") and cat.get("name")
+        ]
+
+    def _nine(self) -> list:
+        import re as _re, urllib.request as _req, gzip as _gz
+        hdrs = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,*/*",
+            "Accept-Encoding": "gzip, deflate",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        req = _req.Request("https://www.9now.com.au/genres", headers=hdrs)
+        with _req.urlopen(req, timeout=20) as resp:
+            raw = resp.read()
+            if resp.headers.get("Content-Encoding") == "gzip":
+                raw = _gz.decompress(raw)
+            html = raw.decode("utf-8", errors="replace")
+        # Genre links appear as href="/shows/{slug}" on the genres page
+        slugs = _re.findall(r'href="/shows/([a-z0-9][a-z0-9-]+)"', html)
+        seen: set = set()
+        cats = []
+        for slug in slugs:
+            if slug in seen:
+                continue
+            seen.add(slug)
+            cats.append({"name": slug.replace("-", " ").title(), "id": slug})
+        return cats
+
+    def _nbc(self) -> list:
+        import re as _re, urllib.request as _req, gzip as _gz
+        hdrs = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,*/*",
+            "Accept-Encoding": "gzip, deflate",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Origin": "https://www.nbc.com",
+            "Referer": "https://www.nbc.com/",
+        }
+        req = _req.Request("https://www.nbc.com/shows", headers=hdrs)
+        with _req.urlopen(req, timeout=20) as resp:
+            raw = resp.read()
+            if resp.headers.get("Content-Encoding") == "gzip":
+                raw = _gz.decompress(raw)
+            html = raw.decode("utf-8", errors="replace")
+        # Category links appear as href="/shows/{slug}" on the NBC shows page
+        slugs = _re.findall(r'href="/shows/([a-z0-9][a-z0-9-]+)"', html)
+        seen: set = set()
+        cats = []
+        for slug in slugs:
+            if slug in seen:
+                continue
+            seen.add(slug)
+            cats.append({"name": slug.replace("-", " ").title(), "id": slug})
+        return cats
+
+    def _tubi(self) -> list:
+        return [
+            {"name": "Action",            "id": "https://tubitv.com/category/action"},
+            {"name": "Animation",         "id": "https://tubitv.com/category/animation"},
+            {"name": "Anime",             "id": "https://tubitv.com/category/anime"},
+            {"name": "British TV",        "id": "https://tubitv.com/category/british_tv"},
+            {"name": "Classic Movies",    "id": "https://tubitv.com/category/classic_movies"},
+            {"name": "Comedy",            "id": "https://tubitv.com/category/comedy"},
+            {"name": "Crime",             "id": "https://tubitv.com/category/crime"},
+            {"name": "Documentary",       "id": "https://tubitv.com/category/documentary"},
+            {"name": "Drama",             "id": "https://tubitv.com/category/drama"},
+            {"name": "Family",            "id": "https://tubitv.com/category/family"},
+            {"name": "Fantasy",           "id": "https://tubitv.com/category/fantasy"},
+            {"name": "Horror",            "id": "https://tubitv.com/category/horror"},
+            {"name": "International",     "id": "https://tubitv.com/category/international"},
+            {"name": "Kids",              "id": "https://tubitv.com/category/kids"},
+            {"name": "Romance",           "id": "https://tubitv.com/category/romance"},
+            {"name": "Sci-Fi",            "id": "https://tubitv.com/category/sci_fi"},
+            {"name": "Spanish",           "id": "https://tubitv.com/category/spanish"},
+            {"name": "Thriller",          "id": "https://tubitv.com/category/thriller"},
+            {"name": "True Crime",        "id": "https://tubitv.com/category/true_crime"},
+            {"name": "Western",           "id": "https://tubitv.com/category/western"},
+        ]
+
+    def _rktn(self) -> list:
+        return [
+            {"name": "Movies",   "id": "rktn-type:movies"},
+            {"name": "TV Shows", "id": "rktn-type:tv_shows"},
+        ]
+
+    def _rktn_genres(self, content_type: str) -> list:
+        import urllib.parse as _up
+        label_prefix = "Movies" if content_type == "movies" else "TV Shows"
+        qs   = _up.urlencode({
+            "classification_id": "18",
+            "content_type":      content_type,
+            "device_identifier": "web",
+            "locale":            "en",
+            "market_code":       "uk",
+        })
+        data = self._fetch_json(f"https://gizmo.rakuten.tv/v3/genres?{qs}")
+        cats = []
+        for genre in data.get("data") or []:
+            if not isinstance(genre, dict):
+                continue
+            slug = genre.get("id", "")
+            name = genre.get("name", slug)
+            if not slug or slug == "--all":
+                continue
+            cats.append({"name": name, "id": f"{content_type}:{slug}"})
+        return cats
+
+    def _vm(self) -> list:
+        import re as _re
+        BASE = "key=821254297041614280861178657602&cc=IE&lang=en&platform=chrome"
+        HEADERS = {
+            "Origin":  "https://play.virginmediatelevision.ie",
+            "Referer": "https://play.virginmediatelevision.ie/",
+        }
+        # Known playlists — used as fallback when home page links are geofenced
+        KNOWN = [
+            (435, "Trending Now"),
+            (434, "Recently Added"),
+            (248, "Boxsets"),
+            (278, "Unmissable Drama"),
+            (279, "Reality Check"),
+            (280, "Virgin Media Originals"),
+            (281, "True Crime & Investigation"),
+            (287, "Star-Studded Shows"),
+            (289, "Sport"),
+            (293, "Food & Travel"),
+            (329, "Documentaries"),
+            (330, "Classic TV"),
+            (336, "Chat and Entertainment"),
+            (393, "Lets Get Quizzical"),
+            (436, "True Crime Stories"),
+        ]
+        cats = []
+        seen_ids = set()
+
+        # Try dynamic discovery from home page (populated when in IE)
+        try:
+            home = self._fetch_json(
+                f"https://v6-metadata-cf.simplestreamcdn.com/api/page/home?{BASE}", HEADERS
+            )
+            for s in (home.get("response") or {}).get("sections") or []:
+                link = s.get("link") or ""
+                m = _re.search(r"seriesPlaylist/(\d+)", link, _re.I)
+                if m:
+                    pid  = int(m.group(1))
+                    name = (s.get("title") or f"Playlist {pid}").strip()
+                    cats.append({"name": name, "id": f"vm-playlist:{pid}"})
+                    seen_ids.add(pid)
+        except Exception:
+            pass
+
+        # Hardcoded fallback for known playlists not discovered dynamically
+        for pid, name in KNOWN:
+            if pid not in seen_ids:
+                cats.append({"name": name, "id": f"vm-playlist:{pid}"})
+
+        # Catchup channels (always available)
+        cats.extend([
+            {"name": "── Catch Up ──",    "id": ""},
+            {"name": "Virgin Media One",   "id": "vm-catchup:34806"},
+            {"name": "Virgin Media Two",   "id": "vm-catchup:34824"},
+            {"name": "Virgin Media Three", "id": "vm-catchup:34822"},
+        ])
+        return cats
+
+    def _roku(self) -> list:
+        # Tokens taken directly from therokuchannel.roku.com/genre/{token}/{slug}
+        return [
+            {"name": "Action",         "id": "roku-token:w.lmGLlWB7kAfG6ao3x"},
+            {"name": "Animated",       "id": "roku-token:w.J9b7o1xY8mImylr10oky"},
+            {"name": "Anime",          "id": "roku-token:w.D9P5xdADJlIBYJxw"},
+            {"name": "Classic Cinema", "id": "roku-token:w.z1437WvRG9c56YlM1R3"},
+            {"name": "Comedy",         "id": "roku-token:w.ZxGZeRpzbGslWKQL6"},
+            {"name": "Crime",          "id": "roku-token:w.apGKP1mx2aubGrwl"},
+            {"name": "Documentaries",  "id": "roku-token:w.45Ax2ewgv5CrP9yPP4m7IDZmQA"},
+            {"name": "Drama",          "id": "roku-token:w.VyG3z1YKjQT5J4xV"},
+            {"name": "Horror",         "id": "roku-token:w.J9b7o1xDM0tBVrRr3"},
+            {"name": "Miniseries",     "id": "roku-token:w.RQGlM1KD4ZtJZkRbdJyDuaqwA"},
+            {"name": "Music",          "id": "roku-token:w.v14l8W0omQc9122j"},
+            {"name": "Reality",        "id": "roku-token:w.1ayDN3gjBqFg1x5Bda1"},
+            {"name": "Romance",        "id": "roku-token:w.x14ymWlVGkc9VzKmqZa"},
+            {"name": "Sci-Fi",         "id": "roku-token:w.RQGlM1KqJQTJrpRlQl4dUo1GwjjZbPum7"},
+            {"name": "Sitcoms",        "id": "roku-token:w.5dxeaZRANmIJNNZvQ"},
+            {"name": "Thrillers",      "id": "roku-token:w.QVGzk1v0MyUGwrg88lVphA1jWk9JJPH26pz5PBP1"},
+            {"name": "Westerns",       "id": "roku-token:w.j5GmrWLJkVSoeNbyR9w"},
+        ]
+
+    def _cwtv(self) -> list:
+        return [
+            {"name": "All Shows", "id": "cwtv-genre:all"},
+        ]
+
+    def _cbs(self) -> list:
+        return [
+            {"name": "Popular",    "id": "cbs-cat:popular"},
+            {"name": "A-Z",        "id": "cbs-cat:all"},
+            {"name": "Dramas",     "id": "cbs-cat:dramas"},
+            {"name": "Comedies",   "id": "cbs-cat:comedies"},
+            {"name": "Reality",    "id": "cbs-cat:reality"},
+            {"name": "Daytime",    "id": "cbs-cat:daytime"},
+            {"name": "Primetime",  "id": "cbs-cat:primetime"},
+            {"name": "Late Night", "id": "cbs-cat:late-night"},
+            {"name": "Specials",   "id": "cbs-cat:specials"},
+            {"name": "News",       "id": "cbs-cat:news"},
+        ]
+
+    def _pbs(self) -> list:
+        # Genre values are confirmed GraphQL enum strings
+        return [
+            {"name": "Arts & Music",         "id": "pbs-genre:ARTS_AND_MUSIC"},
+            {"name": "Culture",              "id": "pbs-genre:CULTURE"},
+            {"name": "Drama",                "id": "pbs-genre:DRAMA"},
+            {"name": "Food",                 "id": "pbs-genre:FOOD"},
+            {"name": "History",              "id": "pbs-genre:HISTORY"},
+            {"name": "Home & How To",        "id": "pbs-genre:HOME_AND_HOWTO"},
+            {"name": "Indie Films",          "id": "pbs-genre:INDIE_FILMS"},
+            {"name": "News & Public Affairs","id": "pbs-genre:NEWS_AND_PUBLIC_AFFAIRS"},
+            {"name": "Science & Nature",     "id": "pbs-genre:SCIENCE_AND_NATURE"},
+        ]
+
+    def _crav(self) -> list:
+        return [
+            {"name": "Movies",   "id": "crav-type:movies"},
+            {"name": "TV Shows", "id": "crav-type:shows"},
+        ]
+
+    def _crav_genres(self, section: str) -> list:
+        if section == "shows":
+            return [
+                {"name": "Comedy",      "id": "crav-path:shows-comedy"},
+                {"name": "Crime",       "id": "crav-path:shows-crime"},
+                {"name": "Documentary", "id": "crav-path:shows-documentaries"},
+                {"name": "Drama",       "id": "crav-path:shows-drama"},
+                {"name": "Podcast",     "id": "crav-path:shows-podcast"},
+                {"name": "Reality",     "id": "crav-path:shows-reality"},
+                {"name": "Romance",     "id": "crav-path:shows-romance"},
+            ]
+        else:  # movies
+            return [
+                {"name": "Action & Adventure", "id": "crav-path:movies-action"},
+                {"name": "Comedy",             "id": "crav-path:movies-comedy"},
+                {"name": "Documentary",        "id": "crav-path:movies-documentaries"},
+                {"name": "Drama",              "id": "crav-path:movies-drama"},
+                {"name": "Horror",             "id": "crav-path:movies-horror"},
+                {"name": "Romance",            "id": "crav-path:movies-romance"},
+                {"name": "Sci-Fi & Fantasy",   "id": "crav-path:movies-sci-fi"},
+            ]
+
+    def _cbc(self) -> list:
+        return [
+            {"name": "TV Shows", "id": "cbc-type:shows"},
+            {"name": "Films",  "id": "cbc-type:films"},
+            {"name": "Kids",   "id": "cbc-type:kids"},
+        ]
+
+    def _cbc_genres(self, section: str) -> list:
+        if section == "kids":
+            return [
+                {"name": "All",        "id": "cbc-genre:category/kids-all"},
+                {"name": "2–5 Years",  "id": "cbc-genre:category/kids-2-5-years"},
+                {"name": "6–8 Years",  "id": "cbc-genre:category/kids-6-8-years"},
+                {"name": "9–12 Years", "id": "cbc-genre:category/kids-9-12-years"},
+            ]
+        elif section == "shows":
+            return [
+                {"name": "All",                  "id": "cbc-genre:category/shows"},
+                {"name": "Drama",                "id": "cbc-genre:category/drama"},
+                {"name": "Comedy",               "id": "cbc-genre:category/comedy"},
+                {"name": "Lifestyle & Reality",  "id": "cbc-genre:category/lifestyle-reality"},
+                {"name": "Mystery & Crime",      "id": "cbc-genre:category/mystery-and-crime"},
+                {"name": "Sports",               "id": "cbc-genre:category/sports"},
+                {"name": "News & Current Affairs","id": "cbc-genre:category/news-current-affairs"},
+                {"name": "Music",                "id": "cbc-genre:category/music"},
+            ]
+        else:  # films
+            return [
+                {"name": "Drama",          "id": "cbc-collection:drama-films"},
+                {"name": "Comedy",         "id": "cbc-collection:comedy-films"},
+                {"name": "Romance",        "id": "cbc-collection:romance-films"},
+                {"name": "RomCom",         "id": "cbc-collection:romcom-films"},
+                {"name": "Horror",         "id": "cbc-collection:horror-films"},
+                {"name": "Mystery & Crime","id": "cbc-collection:mystery-crime-films"},
+                {"name": "Sci-Fi & Fantasy","id": "cbc-collection:sci-fi-fantasy-films"},
+                {"name": "Music",          "id": "cbc-collection:music-films"},
+                {"name": "Indigenous",     "id": "cbc-collection:indigenous-films"},
+                {"name": "Watch with Pride","id": "cbc-collection:lgbtq-films"},
+            ]
+
+    def _threenow(self) -> list:
+        return [
+            {"name": "All Shows",           "id": "threenow-genre:all-shows"},
+            {"name": "Comedy",              "id": "threenow-genre:comedy"},
+            {"name": "Documentary",         "id": "threenow-genre:documentaries"},
+            {"name": "Drama",               "id": "threenow-genre:drama"},
+            {"name": "Factual",             "id": "threenow-genre:factual"},
+            {"name": "Local",               "id": "threenow-genre:local"},
+            {"name": "Movies",              "id": "threenow-genre:movies"},
+            {"name": "News & Current Affairs","id": "threenow-genre:news-current-affairs"},
+            {"name": "Paranormal",          "id": "threenow-genre:paranormal"},
+            {"name": "Reality",             "id": "threenow-genre:reality"},
+            {"name": "Sport",               "id": "threenow-genre:sport"},
+            {"name": "Te reo Māori",        "id": "threenow-genre:te-reo-m-ori"},
+            {"name": "True Crime",          "id": "threenow-genre:true-crime"},
+        ]
+
+    def _aubc(self) -> list:
+        return [
+            {"name": "Drama",         "id": "aubc-cat:drama"},
+            {"name": "Comedy",        "id": "aubc-cat:comedy"},
+            {"name": "Movies",        "id": "aubc-cat:movies"},
+            {"name": "News",          "id": "aubc-cat:news"},
+            {"name": "Sport",         "id": "aubc-cat:sport"},
+            {"name": "Science & Nature", "id": "aubc-cat:science"},
+            {"name": "Arts & Music",  "id": "aubc-cat:arts"},
+            {"name": "Lifestyle",     "id": "aubc-cat:lifestyle"},
+            {"name": "Education",     "id": "aubc-cat:education"},
+            {"name": "Indigenous",    "id": "aubc-cat:indigenous"},
+            {"name": "LGBTQIA+",      "id": "aubc-cat:lgbtqia"},
+        ]
+
+    def _seven(self) -> list:
+        return [
+            {"name": "TV Shows", "id": "seven-type:shows"},
+            {"name": "Movies",   "id": "seven-type:movies"},
+        ]
+
+    def _seven_shelves(self, page_slug: str) -> list:
+        import urllib.request as _ur, json as _json
+        HDRS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json",
+                "x-swm-apikey": "kGcrNnuPClrkynfnKwG8IA/NhVG6ut5nPEdWF2jscvE="}
+        PARAMS = "platform-id=web&market-id=4&platform-version=5.25.0.0&api-version=5.9.0.0"
+        req = _ur.Request(
+            f"https://component-cdn.swm.digital/content/{page_slug}?{PARAMS}", headers=HDRS)
+        with _ur.urlopen(req, timeout=15) as r:
+            page = _json.loads(r.read().decode())
+        if page_slug == "shows":
+            # Use the Browse Categories navigation shelf — exact match to website
+            for item in (page.get("items") or []):
+                if not isinstance(item, dict): continue
+                if item.get("type") == "navigationShelf" and (item.get("title") or "").lower() == "browse categories":
+                    cats = []
+                    for nav in (item.get("items") or []):
+                        if not isinstance(nav, dict): continue
+                        title  = nav.get("title") or ""
+                        slug   = ((nav.get("contentLink") or {}).get("url") or "").lstrip("/")
+                        if not title or not slug or slug == "shows-a-z":
+                            continue
+                        cats.append({"name": title, "id": f"seven-genre:{slug}"})
+                    return cats
+            return []
+        else:
+            # Movies — use the movie-specific mediaShelf items directly
+            SKIP_MOVIES = {"new movies on 7plus", "popular movies", "christmas in july"}
+            cats = []
+            for item in (page.get("items") or []):
+                if not isinstance(item, dict) or item.get("type") != "mediaShelf":
+                    continue
+                title    = item.get("title") or ""
+                shelf_id = str(item.get("id") or "")
+                if not title or not shelf_id or title.lower() in SKIP_MOVIES:
+                    continue
+                cats.append({"name": title, "id": f"seven-shelf:movies:{shelf_id}"})
+            return cats
+
+    def _ten(self) -> list:
+        return [
+            {"name": "Drama",              "id": "ten-genre:drama"},
+            {"name": "Comedy",             "id": "ten-genre:comedy"},
+            {"name": "Reality",            "id": "ten-genre:reality"},
+            {"name": "Crime",              "id": "ten-genre:crime"},
+            {"name": "Documentary",        "id": "ten-genre:documentary"},
+            {"name": "Kids",               "id": "ten-genre:kids"},
+            {"name": "Lifestyle",          "id": "ten-genre:lifestyle"},
+            {"name": "Light Entertainment","id": "ten-genre:light-entertainment"},
+            {"name": "News",               "id": "ten-genre:news"},
+            {"name": "Sport",              "id": "ten-genre:sport"},
+            {"name": "Adventure",          "id": "ten-genre:adventure"},
+        ]
+
+    def _sbs(self) -> list:
+        return [
+            {"name": "TV Shows", "id": "SBS:tv"},
+            {"name": "Movies",   "id": "SBS:movies"},
+        ]
+
+    def _sbs_tv(self) -> list:
+        return [
+            {"name": "Drama",                  "id": "sbs-col:drama-tv-shows"},
+            {"name": "Comedy",                 "id": "sbs-col:comedy-tv-shows"},
+            {"name": "Documentary",            "id": "sbs-col:documentary-tv-shows"},
+            {"name": "Food",                   "id": "sbs-col:food-tv-shows"},
+            {"name": "Entertainment",          "id": "sbs-col:entertainment-tv-shows"},
+            {"name": "Children's",             "id": "sbs-col:childrens-tv-shows"},
+            {"name": "News & Current Affairs", "id": "sbs-col:news-and-current-affairs"},
+            {"name": "NITV",                   "id": "sbs-page:nitv-muy-ngulayg"},
+            {"name": "Sport",                  "id": "sbs-page:sport"},
+        ]
+
+    def _sbs_movies(self) -> list:
+        return [
+            {"name": "All",            "id": "sbs-movie:all-movies"},
+            {"name": "Action",         "id": "sbs-movie:action-movies"},
+            {"name": "Animation",      "id": "sbs-movie:animation-movies"},
+            {"name": "Biography",      "id": "sbs-movie:biography-movies"},
+            {"name": "Classic",        "id": "sbs-movie:classic-movies"},
+            {"name": "Comedy",         "id": "sbs-movie:comedy-movies"},
+            {"name": "Crime & Mystery","id": "sbs-movie:crime-mystery-movies"},
+            {"name": "Drama",          "id": "sbs-movie:drama-movies"},
+            {"name": "Family",         "id": "sbs-movie:family-movies"},
+            {"name": "Fantasy",        "id": "sbs-movie:fantasy-movies"},
+            {"name": "Documentary",    "id": "sbs-movie:feature-documentaries"},
+            {"name": "Horror",         "id": "sbs-movie:horror-movies"},
+            {"name": "Martial Arts",   "id": "sbs-movie:martial-arts-movies"},
+            {"name": "Musical",        "id": "sbs-movie:musical-movies"},
+            {"name": "Romance",        "id": "sbs-movie:romance-movies"},
+            {"name": "Sci-Fi",         "id": "sbs-movie:sci-fi-cinema"},
+            {"name": "Thriller",       "id": "sbs-movie:thriller-movies"},
+            {"name": "War",            "id": "sbs-movie:war-movies"},
+            {"name": "Western",        "id": "sbs-movie:wild-westerns-movies"},
+        ]
+
 
 class CategoryShowsWorker(QThread):
     """Fetches the list of shows in a given category."""
@@ -1950,9 +3274,10 @@ class CategoryShowsWorker(QThread):
 
     def __init__(self, service_id: str, category_id: str, category_name: str):
         super().__init__()
-        self._svc  = service_id
-        self._id   = category_id
-        self._name = category_name
+        self._svc         = service_id
+        self._id          = category_id
+        self._name        = category_name
+        self.total_count  = 0   # set by _rktn() when API provides a total
 
     def _fetch_json(self, url: str, headers: dict | None = None) -> dict | list:
         import urllib.request, gzip as _gz, json as _json
@@ -1964,7 +3289,7 @@ class CategoryShowsWorker(QThread):
         if headers:
             hdrs.update(headers)
         req = urllib.request.Request(url, headers=hdrs)
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with urllib.request.urlopen(req, timeout=45) as resp:
             raw = resp.read()
             if resp.headers.get("Content-Encoding") == "gzip":
                 raw = _gz.decompress(raw)
@@ -1990,6 +3315,40 @@ class CategoryShowsWorker(QThread):
                 shows = self._tvnz()
             elif svc == "TPTV":
                 shows = self._tptv()
+            elif svc == "TUBI":
+                shows = self._tubi()
+            elif svc == "PLUTO":
+                shows = self._pluto()
+            elif svc == "NINE":
+                shows = self._nine()
+            elif svc == "NBC":
+                shows = self._nbc()
+            elif svc == "RKTN":
+                shows = self._rktn()
+            elif svc == "VM":
+                shows = self._vm()
+            elif svc == "ROKU":
+                shows = self._roku()
+            elif svc == "CBS":
+                shows = self._cbs()
+            elif svc == "CWTV":
+                shows = self._cwtv()
+            elif svc == "PBS":
+                shows = self._pbs()
+            elif svc == "CRAV":
+                shows = self._crav()
+            elif svc == "CBC":
+                shows = self._cbc()
+            elif svc == "ThreeNow":
+                shows = self._threenow()
+            elif svc == "AUBC":
+                shows = self._aubc()
+            elif svc == "SEVEN":
+                shows = self._seven()
+            elif svc == "TEN":
+                shows = self._ten()
+            elif svc == "SBS":
+                shows = self._sbs()
             else:
                 self.error.emit(f"Category shows not available for {svc}.")
                 return
@@ -2145,7 +3504,7 @@ class CategoryShowsWorker(QThread):
 
     def _stv(self) -> list:
         # _id is a player.stv.tv/categories/{slug} page URL
-        # Vinefeeder parses __NEXT_DATA__ → props.pageProps.data.assets
+        # Parses __NEXT_DATA__ → props.pageProps.data.assets
         import re as _re, json as _json
         html = self._fetch_html(self._id, headers={
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64)",
@@ -2214,8 +3573,8 @@ class CategoryShowsWorker(QThread):
 
     def _tvnz(self) -> list:
         # The TVNZ category edge API requires authentication that we don't have
-        # at browse time. Vinefeeder's approach: derive a search term from the
-        # category URL slug and use the unauthenticated search API instead.
+        # at browse time — derive a search term from the category URL slug and
+        # use the unauthenticated search API instead.
         import urllib.parse as _up
         path = _up.urlparse(self._id).path.rstrip("/")
         slug = path.split("/")[-1]
@@ -2262,6 +3621,896 @@ class CategoryShowsWorker(QThread):
                 "url":      f"https://tvnz.co.nz/{cty}/{nu}",
             })
         return shows
+
+    def _pluto(self) -> list:
+        import uuid as _uuid, urllib.parse as _up
+        boot_qs = _up.urlencode({
+            "appName": "web", "appVersion": "na",
+            "clientID": str(_uuid.uuid1()), "deviceDNT": 0,
+            "deviceId": "unknown", "clientModelNumber": "na",
+            "serverSideAds": "false", "deviceMake": "unknown",
+            "deviceModel": "web", "deviceType": "web",
+            "deviceVersion": "unknown", "sid": str(_uuid.uuid1()),
+        })
+        boot   = self._fetch_json(f"https://boot.pluto.tv/v4/start?{boot_qs}")
+        token  = boot.get("sessionToken", "")
+        region = boot.get("session", {}).get("activeRegion", "").lower()
+        params = _up.urlencode({"appName": "web", "appVersion": "na",
+                                "clientID": str(_uuid.uuid1()), "deviceType": "web"})
+        data = self._fetch_json(
+            f"https://service-vod.clusters.pluto.tv/v3/vod/categories/{self._id}/items?{params}",
+            {"Authorization": f"Bearer {token}"},
+        )
+        base = f"https://pluto.tv/{region}/on-demand" if region else "https://pluto.tv/on-demand"
+        shows = []
+        for item in (data.get("items") or []):
+            item_id = item.get("_id", "")
+            kind    = item.get("type", "series")
+            title   = item.get("name", item_id)
+            slug    = item.get("slug", item_id)
+            if not item_id:
+                continue
+            url = f"{base}/{'movies' if kind == 'film' else 'series'}/{item_id}/{slug}/details"
+            shows.append({
+                "title":    title,
+                "synopsis": item.get("description", ""),
+                "url":      url,
+            })
+        return shows
+
+    @staticmethod
+    def _tubi_cookies() -> tuple[str, str | None]:
+        """Read tubitv.com cookies from Tubi.txt; raises RuntimeError with user message if unusable."""
+        import base64 as _b64, json as _json, time as _time
+        from pathlib import Path as _P
+        cfg = load_config()
+        cookie_file = _P(cfg.get("install_dir", "")) / "Cookies" / "Tubi.txt"
+        if not cookie_file.exists():
+            raise RuntimeError(
+                "Tubi search requires a cookie file.\n"
+                "Log in to tubitv.com in your browser, export cookies to a file named "
+                "Tubi.txt and place it in EnvyCore/Cookies/."
+            )
+        pairs: list[str] = []
+        at_token: str | None = None
+        try:
+            for line in cookie_file.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split("\t")
+                if len(parts) < 7:
+                    continue
+                domain, name, value = parts[0], parts[5], parts[6]
+                if "tubitv.com" not in domain:
+                    continue
+                pairs.append(f"{name}={value}")
+                if name == "at":
+                    at_token = value
+        except Exception as exc:
+            raise RuntimeError(f"Could not read Tubi.txt: {exc}") from exc
+        if not pairs:
+            raise RuntimeError(
+                "Tubi.txt does not contain any tubitv.com cookies.\n"
+                "Log in to tubitv.com in your browser and re-export the cookies."
+            )
+        if at_token:
+            try:
+                payload_b64 = at_token.split(".")[1]
+                payload_b64 += "=" * (-len(payload_b64) % 4)
+                exp = _json.loads(_b64.urlsafe_b64decode(payload_b64)).get("exp", 0)
+                if exp and exp < _time.time():
+                    raise RuntimeError(
+                        "Your Tubi cookie (at= token) has expired.\n"
+                        "Log in to tubitv.com in your browser and re-export the cookies, "
+                        "then replace EnvyCore/Cookies/Tubi.txt with the new file."
+                    )
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
+        return "; ".join(pairs), at_token
+
+    def _tubi(self) -> list:
+        import urllib.parse as _up
+        cookie_hdr, at_token = self._tubi_cookies()
+        params = _up.urlencode({
+            "search":           self._name,
+            "include_linear":   "false",
+            "include_channels": "false",
+            "is_kids_mode":     "false",
+        })
+        hdrs = {"Cookie": cookie_hdr}
+        if at_token:
+            hdrs["Authorization"] = f"Bearer {at_token}"
+        data = self._fetch_json(
+            f"https://search.production-public.tubi.io/api/v2/search?{params}",
+            hdrs,
+        )
+        shows = []
+        for item in (data.get("contents") or {}).values():
+            content_id = item.get("id", "")
+            kind_code  = item.get("type", "s")
+            if not content_id:
+                continue
+            url = (f"https://tubitv.com/movies/{content_id}"
+                   if kind_code == "v" else
+                   f"https://tubitv.com/series/{content_id}")
+            shows.append({
+                "title":    item.get("title", content_id),
+                "synopsis": item.get("description", ""),
+                "url":      url,
+            })
+        return shows
+
+    def _nine(self) -> list:
+        import re as _re, urllib.request as _req, gzip as _gz
+        # Genre pages are server-rendered HTML at /shows/{genre-slug}
+        # Show links appear as href="/show-slug" (single path segment)
+        _NON_SHOW = {
+            "about", "contact", "genres", "help", "live", "login", "news",
+            "privacy", "search", "shows", "terms", "ways-to-watch",
+        }
+        genre_slug = self._id  # e.g. "comedy", "drama"
+        url = f"https://www.9now.com.au/shows/{genre_slug}"
+        hdrs = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,*/*",
+            "Accept-Encoding": "gzip, deflate",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        req = _req.Request(url, headers=hdrs)
+        with _req.urlopen(req, timeout=20) as resp:
+            raw = resp.read()
+            if resp.headers.get("Content-Encoding") == "gzip":
+                raw = _gz.decompress(raw)
+            html = raw.decode("utf-8", errors="replace")
+
+        import html as _html
+        slugs = _re.findall(r'href="(/([a-z0-9][a-z0-9-]+))"', html)
+        seen: set = set()
+        shows = []
+        for full_path, slug in slugs:
+            if slug in _NON_SHOW or slug in seen:
+                continue
+            seen.add(slug)
+            title = slug.replace("-", " ").title()
+            # Try to extract display name from nearby h2 tag
+            m = _re.search(
+                rf'href="{_re.escape(full_path)}".*?<h2[^>]*>([^<]+)</h2>',
+                html, _re.DOTALL
+            )
+            if m:
+                title = _html.unescape(m.group(1).strip())
+            shows.append({
+                "title":    title,
+                "synopsis": "",
+                "url":      f"https://www.9now.com.au{full_path}",
+            })
+        return shows
+
+    def _nbc(self) -> list:
+        import re as _re, urllib.request as _req, gzip as _gz, html as _html
+        # Category pages are server-rendered at /shows/{genre-slug}
+        # Show links appear as href="/{show-slug}" (single path segment)
+        _NON_SHOW = {
+            "about", "brand", "contact", "help", "live", "login", "news",
+            "privacy", "search", "shows", "schedule", "terms", "video",
+        }
+        url = f"https://www.nbc.com/shows/{self._id}"
+        hdrs = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,*/*",
+            "Accept-Encoding": "gzip, deflate",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Origin": "https://www.nbc.com",
+            "Referer": "https://www.nbc.com/",
+        }
+        req = _req.Request(url, headers=hdrs)
+        with _req.urlopen(req, timeout=20) as resp:
+            raw = resp.read()
+            if resp.headers.get("Content-Encoding") == "gzip":
+                raw = _gz.decompress(raw)
+            html_text = raw.decode("utf-8", errors="replace")
+        slugs = _re.findall(r'href="/([a-z0-9][a-z0-9-]+)"', html_text)
+        seen: set = set()
+        shows = []
+        for slug in slugs:
+            if slug in _NON_SHOW or slug in seen:
+                continue
+            seen.add(slug)
+            title = slug.replace("-", " ").title()
+            m = _re.search(
+                rf'href="/{_re.escape(slug)}".*?<[^>]*class="[^"]*title[^"]*"[^>]*>([^<]+)<',
+                html_text, _re.DOTALL | _re.IGNORECASE
+            )
+            if m:
+                title = _html.unescape(m.group(1).strip())
+            shows.append({
+                "title":    title,
+                "synopsis": "",
+                "url":      f"https://www.nbc.com/{slug}",
+            })
+        return shows
+
+    def _rktn_fetch(self, url: str) -> dict:
+        import urllib.request as _ur, json as _json, re as _re
+        req = _ur.Request(url, headers={
+            "Accept":     "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Origin":     "https://www.rakuten.tv",
+            "Referer":    "https://www.rakuten.tv/",
+        })
+        with _ur.urlopen(req, timeout=45) as resp:
+            text = resp.read().decode("utf-8", errors="replace")
+        # Strip unescaped ASCII control chars that Rakuten embeds in plot descriptions
+        text = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+        return _json.loads(text)
+
+    def _rktn(self) -> list:
+        import urllib.parse as _up
+        # self._id is "movies:{genre_slug}" or "tv_shows:{genre_slug}"
+        try:
+            content_type, genre_slug = self._id.split(":", 1)
+        except ValueError:
+            return []
+        base_params = {
+            "classification_id": "18",
+            "content_type":      content_type,
+            "device_identifier": "web",
+            "locale":            "en",
+            "market_code":       "uk",
+            "per_page":          "36",
+        }
+        shows      = []
+        seen       = set()
+        total_pages = 1
+        try:
+            # Page 1 — genre metadata endpoint includes first batch in data.contents.data
+            qs1   = _up.urlencode({**base_params, "contents[per_page]": "36"})
+            data1 = self._rktn_fetch(f"https://gizmo.rakuten.tv/v3/genres/{genre_slug}?{qs1}")
+            genre_obj    = data1.get("data") or {}
+            contents_obj = genre_obj.get("contents") if isinstance(genre_obj, dict) else {}
+            if isinstance(contents_obj, dict):
+                items1      = contents_obj.get("data") or []
+                pagination        = (contents_obj.get("meta") or {}).get("pagination") or {}
+                total_pages       = int(pagination.get("total_pages") or 1)
+                self.total_count  = int(pagination.get("count") or 0)
+            else:
+                items1 = contents_obj if isinstance(contents_obj, list) else []
+
+            def _add(items):
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    permalink = item.get("id") or item.get("permalink", "")
+                    if not permalink or permalink in seen:
+                        continue
+                    seen.add(permalink)
+                    shows.append({
+                        "title":    item.get("title", permalink),
+                        "synopsis": item.get("short_plot") or item.get("plot", ""),
+                        "url":      f"https://www.rakuten.tv/uk/{content_type}/{permalink}",
+                    })
+
+            _add(items1)
+
+            # Pages 2+ — separate /contents endpoint with plain page= param
+            # Cap at 5 pages (180 titles) to avoid rate-limiting on large genres
+            import time as _time
+            for page in range(2, min(total_pages, 5) + 1):
+                _time.sleep(0.4)
+                qs   = _up.urlencode({**base_params, "page": str(page)})
+                data = self._rktn_fetch(
+                    f"https://gizmo.rakuten.tv/v3/genres/{genre_slug}/contents?{qs}"
+                )
+                # Response is {"data": [...items...], "meta": {...}}
+                items = data.get("data") or []
+                if not isinstance(items, list):
+                    items = []
+                _add(items)
+                if len(items) < 36:
+                    break
+        except Exception as exc:
+            raise RuntimeError(f"Rakuten TV API error: {exc}") from exc
+        return shows
+
+    def _vm(self) -> list:
+        import re as _re
+        BASE = "key=821254297041614280861178657602&cc=IE&lang=en&platform=chrome"
+        HEADERS = {
+            "Origin":  "https://play.virginmediatelevision.ie",
+            "Referer": "https://play.virginmediatelevision.ie/",
+        }
+
+        def _slugify(s):
+            return _re.sub(r"[^a-z0-9]+", "-", str(s).lower()).strip("-") or "show"
+
+        cat_id = self._id
+
+        if cat_id.startswith("vm-playlist:"):
+            playlist_id = cat_id.split(":", 1)[1]
+            data = self._fetch_json(
+                f"https://v6-metadata-cf.simplestreamcdn.com/api/series/playlist/{playlist_id}?{BASE}",
+                HEADERS,
+            )
+            shows = []
+            seen  = set()
+            for section in (data.get("response") or {}).get("sections") or []:
+                uuid = section.get("id") or ""
+                if not uuid or uuid in seen:
+                    continue
+                seen.add(uuid)
+                title    = section.get("title") or uuid
+                synopsis = section.get("description") or ""
+                shows.append({
+                    "title":    title,
+                    "synopsis": synopsis,
+                    "url":      f"https://play.virginmediatelevision.ie/shows/{uuid}/{_slugify(title)}",
+                })
+            return shows
+
+        if cat_id.startswith("vm-catchup:"):
+            channel_id = cat_id.split(":", 1)[1]
+            data = self._fetch_json(
+                f"https://v6-metadata-cf.simplestreamcdn.com/api/vod/{channel_id}?{BASE}",
+                HEADERS,
+            )
+            episodes = []
+            seen     = set()
+            for section in (data.get("response") or {}).get("sections") or []:
+                for tile in section.get("tiles") or []:
+                    uvid = str(tile.get("uvid") or tile.get("id") or "")
+                    if not uvid or uvid in seen:
+                        continue
+                    seen.add(uvid)
+                    title    = tile.get("title") or f"Episode {uvid}"
+                    synopsis = tile.get("description") or ""
+                    episodes.append({
+                        "title":    title,
+                        "synopsis": synopsis,
+                        "url":      f"https://play.virginmediatelevision.ie/watch/vod/{uvid}/{_slugify(title)}",
+                    })
+            return episodes
+
+        return []
+
+    def _roku(self) -> list:
+        import re as _re, urllib.request as _ur, json as _json, http.cookiejar as _cj, urllib.parse as _up
+        HDRS = {
+            "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept":          "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Origin":          "https://therokuchannel.roku.com",
+            "Referer":         "https://therokuchannel.roku.com/",
+        }
+        jar    = _cj.CookieJar()
+        opener = _ur.build_opener(_ur.HTTPCookieProcessor(jar))
+        CONTENT_BASE = "https://therokuchannel.roku.com/api/v2/homescreen/content/"
+
+        def _get(url):
+            req = _ur.Request(url, headers=HDRS)
+            with opener.open(req, timeout=20) as r:
+                raw = r.read()
+                if not raw.strip():
+                    raise RuntimeError("Roku returned empty — try a US VPN")
+                return _json.loads(raw.decode("utf-8"))
+
+        def _slugify(s):
+            return _re.sub(r"[^a-z0-9]+", "-", str(s).lower()).strip("-") or "title"
+
+        if self._id.startswith("roku-token:"):
+            page_token = self._id.split(":", 1)[1]
+        elif self._id.startswith("roku-genre:"):
+            genre_slug = self._id.split(":", 1)[1]
+            # Homepage visit to set session cookies
+            opener.open(_ur.Request("https://therokuchannel.roku.com/",
+                                    headers={**HDRS, "Accept": "text/html,*/*"}), timeout=20)
+            # Fetch category metadata — meta.id is the signed page token (w.TOKEN)
+            cat_data   = _get(CONTENT_BASE + _up.quote(
+                f"https://content.sr.roku.com/content/v1/roku-trc/cat-{genre_slug}", safe=""))
+            page_token = (cat_data.get("meta") or {}).get("id", "")
+            if not page_token or not page_token.startswith("w."):
+                raise RuntimeError(f"No page token found for Roku genre '{genre_slug}'")
+        else:
+            return []
+
+        # Homepage visit to set session cookies (roku-token path skips the genre lookup above)
+        if self._id.startswith("roku-token:"):
+            opener.open(_ur.Request("https://therokuchannel.roku.com/",
+                                    headers={**HDRS, "Accept": "text/html,*/*"}), timeout=20)
+
+        # Fetch the rendered genre page
+        data = _get(
+            f"https://therokuchannel.roku.com/api/v2/homescreen/pages/{page_token}/rendered")
+
+        # 4. Parse collections[].view[] — each item has details.href with tpl_id={content_id}
+        shows = []
+        seen  = set()
+        for collection in data.get("collections") or []:
+            for item in collection.get("view") or []:
+                details = item.get("details") or {}
+                href    = details.get("href") or ""
+                cid_m   = _re.search(r"tpl_id=([a-z0-9]+)", href)
+                if not cid_m:
+                    continue
+                cid = cid_m.group(1)
+                if cid in seen:
+                    continue
+                seen.add(cid)
+                content  = item.get("content") or {}
+                ctype    = content.get("type", "")
+                title    = content.get("title") or cid
+                type_seg = "movie" if ctype in ("movie", "tvspecial") else "series"
+                shows.append({
+                    "title":    title,
+                    "synopsis": "",
+                    "url":      f"https://therokuchannel.roku.com/details/{cid}/{type_seg}/{_slugify(title)}",
+                })
+        return shows
+
+    def _cwtv(self) -> list:
+        import urllib.request as _ur, json as _json
+        if not self._id.startswith("cwtv-genre:"):
+            return []
+        genre = self._id.split(":", 1)[1]
+        HDRS  = {"User-Agent": "Mozilla/5.0 (Linux; Android 11; Smart TV Build/AR2101; wv)",
+                 "Accept": "application/json"}
+        # Fetch full show listing and filter by genre
+        req = _ur.Request(
+            "https://data.cwtv.com/feed/app-2/shows/type_shows/apiversion_25/device_androidtv",
+            headers=HDRS,
+        )
+        with _ur.urlopen(req, timeout=20) as r:
+            data = _json.loads(r.read().decode("utf-8"))
+        # API returns genres as comma-separated strings inside a list, e.g. ["Action,Sci-Fi"]
+        # Map our slug IDs to keywords that appear in those strings
+        GENRE_KEYWORDS = {
+            "drama":            ["drama"],
+            "comedy":           ["comedy"],
+            "action-adventure": ["action", "adventure"],
+            "sci-fi-fantasy":   ["sci-fi", "sci fi", "fantasy"],
+            "crime":            ["crime"],
+            "reality":          ["reality"],
+            "competition":      ["competition"],
+            "supernatural":     ["supernatural"],
+        }
+        keywords = GENRE_KEYWORDS.get(genre, [genre]) if genre != "all" else []
+        shows = []
+        for item in data.get("items") or []:
+            slug  = item.get("show_slug") or item.get("slug") or ""
+            title = item.get("title") or item.get("show_title") or slug
+            if not slug:
+                continue
+            if keywords:
+                # Flatten comma-separated genre strings into individual parts
+                raw = item.get("genres") or []
+                parts = []
+                for g in raw:
+                    for p in g.split(","):
+                        parts.append(p.strip().lower())
+                if not any(kw in p for kw in keywords for p in parts):
+                    continue
+            shows.append({
+                "title":    title,
+                "synopsis": item.get("description_long") or item.get("description") or "",
+                "url":      f"https://www.cwtv.com/shows/{slug}",
+            })
+        return shows
+
+    def _cbs(self) -> list:
+        import urllib.request as _ur, json as _json
+        if not self._id.startswith("cbs-cat:"):
+            return []
+        slug = self._id.split(":", 1)[1]   # e.g. "dramas", "all", "late-night"
+        HDRS = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept":     "application/json, text/plain, */*",
+            "Referer":    "https://www.cbs.com/shows/",
+        }
+        req  = _ur.Request(f"https://www.cbs.com/shows_xhr/{slug}/", headers=HDRS)
+        with _ur.urlopen(req, timeout=20) as r:
+            data = _json.loads(r.read().decode("utf-8"))
+        shows = []
+        seen  = set()
+        # Structure: result.data[].result.data[] → show items
+        for group in (data.get("result") or {}).get("data") or []:
+            inner = (group.get("result") or {}).get("data") or []
+            for show in inner:
+                href  = show.get("href") or ""
+                title = show.get("title") or href
+                if not href or href in seen:
+                    continue
+                seen.add(href)
+                url = href if href.startswith("http") else f"https://www.cbs.com{href}"
+                shows.append({"title": title, "synopsis": "", "url": url})
+        return shows
+
+    def _pbs(self) -> list:
+        if not self._id.startswith("pbs-genre:"):
+            return []
+        genre = self._id.split(":", 1)[1]  # already uppercase enum e.g. "DRAMA"
+        return SearchWorker._pbs_graphql(genre=genre, first=50, ordering="POPULAR", paginate=True)
+
+    def _crav(self) -> list:
+        import urllib.request as _ur, json as _json
+        if not self._id.startswith("crav-path:"):
+            return []
+        slug = self._id.split(":", 1)[1]  # e.g. "shows-drama", "movies-action", "kids"
+
+        token = _crav_get_graphql_token()
+        if not token:
+            raise RuntimeError("No CRAV credentials found. Add CRAV credentials to envied.yaml.")
+
+        HDRS = {
+            "User-Agent":    "Dalvik/2.1.0 (Linux; U; Android 11; SHIELD Android TV Build/RQ1A.210105.003)",
+            "Content-Type":  "application/json",
+            "Accept":        "*/*",
+            "authorization": f"Bearer {token}",
+        }
+        SESSION_CTX = {"userMaturity": "ADULT", "userLanguage": "EN"}
+
+        def _gql(payload):
+            req = _ur.Request("https://rte-api.bellmedia.ca/graphql",
+                              data=_json.dumps(payload).encode(), headers=HDRS)
+            with _ur.urlopen(req, timeout=20) as r:
+                return _json.loads(r.read().decode())
+
+        # 1. GetItemByPath → screen ID
+        item_data = _gql({
+            "query": "query GetItemByPath($path:String!){itemByPath(path:$path){id type}}",
+            "variables": {"path": slug},
+        })
+        screen_id = ((item_data.get("data") or {}).get("itemByPath") or {}).get("id") or ""
+        if not screen_id:
+            return []
+
+        # 2. GetScreen → first Container ID
+        screen_data = _gql({
+            "query": (
+                "query GetScreen($sessionContext:SessionContext!,$id:String!,$limit:Int,$cursor:String){"
+                "screen(sessionContext:$sessionContext id:$id){"
+                "screenContentsPage(limit:$limit cursor:$cursor){"
+                "screenContents{__typename ...on Container{id}}}}}"
+            ),
+            "variables": {"id": screen_id, "sessionContext": SESSION_CTX, "limit": 10, "cursor": None},
+        })
+        contents = (((screen_data.get("data") or {}).get("screen") or {})
+                    .get("screenContentsPage") or {}).get("screenContents") or []
+        container_id = next((c["id"] for c in contents if c.get("__typename") == "Container" and c.get("id")), None)
+        if not container_id:
+            return []
+
+        # Determine type filter based on slug prefix
+        is_movies = slug.startswith("movies-")
+        is_shows  = slug.startswith("shows-")
+
+        # 3. GetGrid → paginate through all items
+        GQL_GRID = (
+            "query GetGrid($sessionContext:SessionContext!,$id:String!,$limit:Int,$cursor:String){"
+            "container(sessionContext:$sessionContext id:$id){"
+            "containerItemsPage(limit:$limit cursor:$cursor){"
+            "cursor items{__typename ...on MediaMetadata{id title path mediaType shortDescription}}}}}"
+        )
+        shows = []
+        cursor = None
+        while True:
+            grid_data = _gql({
+                "query": GQL_GRID,
+                "variables": {"id": container_id, "sessionContext": SESSION_CTX, "limit": 50, "cursor": cursor},
+            })
+            page = (((grid_data.get("data") or {}).get("container") or {})
+                    .get("containerItemsPage") or {})
+            for item in page.get("items") or []:
+                if item.get("__typename") != "MediaMetadata":
+                    continue
+                media_type = (item.get("mediaType") or "").upper()
+                if is_movies and media_type != "MOVIE":
+                    continue
+                if is_shows and media_type == "MOVIE":
+                    continue
+                path = item.get("path") or ""
+                title = item.get("title") or ""
+                if not path or not title:
+                    continue
+                shows.append({
+                    "title":    title,
+                    "synopsis": item.get("shortDescription") or "",
+                    "url":      f"https://www.crave.ca/{path.lstrip('/')}",
+                })
+            cursor = page.get("cursor")
+            if not cursor:
+                break
+        return shows
+
+    def _cbc(self) -> list:
+        import urllib.request as _ur, urllib.parse as _up, json as _json
+        cid = self._id
+        BASE = "https://services.radio-canada.ca"
+        HDRS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+
+        def _make_url(item_url):
+            if not item_url:
+                return ""
+            return item_url if item_url.startswith("http") else f"https://gem.cbc.ca/{item_url.lstrip('/')}"
+
+        # cbc-genre:category/{slug}  or  cbc-collection:collection/{slug}
+        # Both use content[0].items.results[] with pagination
+        if cid.startswith("cbc-genre:") or cid.startswith("cbc-collection:"):
+            slug = cid.split(":", 1)[1]
+            # cbc-genre already includes type prefix (e.g. "category/drama")
+            # cbc-collection slug is bare (e.g. "drama-films") — prepend "collection/"
+            api_path = slug if cid.startswith("cbc-genre:") else f"collection/{slug}"
+            shows = []
+            seen = set()
+            page = 1
+            while True:
+                qs = _up.urlencode({"device": "web", "pageSize": 60, "pageNumber": page})
+                req = _ur.Request(f"{BASE}/ott/catalog/v2/gem/{api_path}?{qs}", headers=HDRS)
+                with _ur.urlopen(req, timeout=30) as r:
+                    data = _json.loads(r.read().decode())
+                content = (data.get("content") or [{}])[0]
+                items   = content.get("items") or {}
+                for item in (items.get("results") or []):
+                    title    = item.get("title") or ""
+                    item_url = _make_url(item.get("url") or "")
+                    if not title or not item_url or item_url in seen:
+                        continue
+                    seen.add(item_url)
+                    shows.append({"title": title, "synopsis": item.get("description") or "", "url": item_url})
+                if page >= (items.get("totalPages") or 1):
+                    break
+                page += 1
+            return shows
+
+        # cbc-section:{slug}  e.g. "cbc-section:kids"
+        # Uses top-level lineups dict → paginated results → each result has items[] (flat list)
+        if cid.startswith("cbc-section:"):
+            section_slug = cid.split(":", 1)[1]
+            shows = []
+            seen = set()
+            page = 1
+            while True:
+                qs = _up.urlencode({"device": "web", "pageSize": 20, "pageNumber": page})
+                req = _ur.Request(f"{BASE}/ott/catalog/v2/gem/section/{section_slug}?{qs}", headers=HDRS)
+                with _ur.urlopen(req, timeout=30) as r:
+                    data = _json.loads(r.read().decode())
+                lineups_page = data.get("lineups") or {}
+                for lineup in (lineups_page.get("results") or []):
+                    for item in (lineup.get("items") or []):
+                        title    = item.get("title") or ""
+                        item_url = _make_url(item.get("url") or "")
+                        if not title or not item_url or item_url in seen:
+                            continue
+                        seen.add(item_url)
+                        shows.append({"title": title, "synopsis": item.get("description") or "", "url": item_url})
+                if page >= (lineups_page.get("totalPages") or 1):
+                    break
+                page += 1
+            return shows
+
+        return []
+
+    def _threenow(self) -> list:
+        import urllib.request as _ur, json as _json
+        genre_slug = self._id.split(":", 1)[1] if self._id.startswith("threenow-genre:") else "all-shows"
+        req = _ur.Request(
+            "https://now-api.fullscreen.nz/v5/shows",
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+        )
+        with _ur.urlopen(req, timeout=20) as r:
+            data = _json.loads(r.read().decode())
+        shows = []
+        for show in (data.get("shows") or []):
+            show_id = show.get("showId") or ""
+            title   = show.get("name") or ""
+            if not show_id or not title:
+                continue
+            if genre_slug != "all-shows" and genre_slug not in (show.get("genres") or []):
+                continue
+            shows.append({
+                "title":    title,
+                "synopsis": "",
+                "url":      f"https://www.threenow.co.nz/shows/{show_id}",
+            })
+        return sorted(shows, key=lambda s: s["title"])
+
+    def _aubc(self) -> list:
+        import urllib.request as _ur, json as _json
+        slug = self._id.split(":", 1)[1] if self._id.startswith("aubc-cat:") else self._id
+        BASE = "https://api.iview.abc.net.au"
+        HDRS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+        req = _ur.Request(f"{BASE}/v3/category/{slug}", headers=HDRS)
+        with _ur.urlopen(req, timeout=30) as r:
+            data = _json.loads(r.read().decode())
+        shows = []
+        seen = set()
+        for coll in ((data.get("_embedded") or {}).get("collections") or []):
+            for item in (coll.get("items") or []):
+                title    = item.get("title") or ""
+                item_url = item.get("shareUrl") or ""
+                if not title or not item_url or item_url in seen:
+                    continue
+                seen.add(item_url)
+                shows.append({
+                    "title":    title,
+                    "synopsis": item.get("shortSynopsis") or "",
+                    "url":      item_url,
+                })
+        return sorted(shows, key=lambda s: s["title"])
+
+    def _seven(self) -> list:
+        import urllib.request as _ur, urllib.parse as _up, json as _json
+        HDRS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json",
+                "x-swm-apikey": "kGcrNnuPClrkynfnKwG8IA/NhVG6ut5nPEdWF2jscvE="}
+        mreq = _ur.Request("https://market-cdn.swm.digital/v1/market/ip?apikey=web", headers=HDRS)
+        try:
+            with _ur.urlopen(mreq, timeout=8) as r:
+                market_id = _json.loads(r.read().decode()).get("_id", 4)
+        except Exception:
+            market_id = 4
+        base_params = _up.urlencode({
+            "platform-id": "web", "market-id": market_id,
+            "platform-version": "5.25.0.0", "api-version": "5.9.0.0",
+        })
+
+        def _fetch_shelf(page_slug: str, component_id: str) -> list:
+            req = _ur.Request(
+                f"https://component.swm.digital/v2/component/{page_slug}"
+                f"?component-id={component_id}&{base_params}", headers=HDRS)
+            try:
+                with _ur.urlopen(req, timeout=15) as r:
+                    shelf_data = _json.loads(r.read().decode())
+            except Exception:
+                return []
+            out = []
+            for mi in (shelf_data.get("mediaItems") or []):
+                title  = mi.get("title") or ""
+                cl_url = (mi.get("contentLink") or {}).get("url") or ""
+                if title and cl_url:
+                    out.append((title, mi.get("description") or "", cl_url))
+            return out
+
+        shows = []
+        seen = set()
+
+        if self._id.startswith("seven-genre:"):
+            # Build movie URL exclusion set from ALL movies page shelves
+            movie_urls: set = set()
+            try:
+                mv_page_req = _ur.Request(
+                    f"https://component-cdn.swm.digital/content/movies?{base_params}", headers=HDRS)
+                with _ur.urlopen(mv_page_req, timeout=15) as r:
+                    mv_page = _json.loads(r.read().decode())
+                mv_shelf_ids = [
+                    str(item.get("id")) for item in (mv_page.get("items") or [])
+                    if isinstance(item, dict) and item.get("type") == "mediaShelf" and item.get("id")
+                ]
+                for mv_sid in mv_shelf_ids:
+                    for _, _, cl_url in _fetch_shelf("movies", mv_sid):
+                        movie_urls.add(cl_url)
+            except Exception:
+                pass  # If movies fetch fails, carry on without exclusion
+
+            # TV Shows genre page — aggregate across shelves, excluding movies
+            genre_slug = self._id.split(":", 1)[1]
+            page_req = _ur.Request(
+                f"https://component-cdn.swm.digital/content/{genre_slug}?{base_params}",
+                headers=HDRS)
+            with _ur.urlopen(page_req, timeout=20) as r:
+                page = _json.loads(r.read().decode())
+            MOVIE_SHELF_WORDS = {"movie", "blockbuster", "film"}
+            shelf_ids = [
+                (str(item.get("id")), item.get("title") or "")
+                for item in (page.get("items") or [])
+                if isinstance(item, dict) and item.get("type") == "mediaShelf" and item.get("id")
+            ]
+            # Skip shelves whose titles are clearly movie-focused
+            tv_shelf_ids = [
+                sid for sid, stitle in shelf_ids
+                if not any(w in stitle.lower() for w in MOVIE_SHELF_WORDS)
+            ]
+            for shelf_id in tv_shelf_ids[:6]:
+                for title, synopsis, cl_url in _fetch_shelf(genre_slug, shelf_id):
+                    if cl_url not in seen and cl_url not in movie_urls:
+                        seen.add(cl_url)
+                        shows.append({"title": title, "synopsis": synopsis,
+                                      "url": f"https://7plus.com.au{cl_url}"})
+
+        elif self._id.startswith("seven-shelf:"):
+            # Movies genre shelf — single direct component fetch
+            parts = self._id.split(":")
+            page_slug    = parts[1] if len(parts) > 1 else "movies"
+            component_id = parts[2] if len(parts) > 2 else ""
+            if component_id:
+                for title, synopsis, cl_url in _fetch_shelf(page_slug, component_id):
+                    if cl_url not in seen:
+                        seen.add(cl_url)
+                        shows.append({"title": title, "synopsis": synopsis,
+                                      "url": f"https://7plus.com.au{cl_url}"})
+
+        return sorted(shows, key=lambda s: s["title"])
+
+    def _ten(self) -> list:
+        import urllib.request as _ur
+        genre_slug = self._id.split(":", 1)[1] if ":" in self._id else self._id
+        HDRS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,*/*"}
+        req = _ur.Request(f"https://10.com.au/shows/{genre_slug}", headers=HDRS)
+        with _ur.urlopen(req, timeout=20) as r:
+            html = r.read().decode("utf-8", errors="replace")
+        data = SearchWorker._ten_brace_extract(html, 'const showsPageData = ')
+        if not data:
+            return []
+        return sorted(SearchWorker._ten_shows_from_data(data), key=lambda s: s["title"])
+
+    def _sbs(self) -> list:
+        import urllib.request as _ur, json as _json
+        cat_id = self._id
+        HDRS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "application/json", "Origin": "https://www.sbs.com.au"}
+
+        if cat_id.startswith("sbs-col:") or cat_id.startswith("sbs-movie:"):
+            is_movie = cat_id.startswith("sbs-movie:")
+            col_slug = cat_id.split(":", 1)[1]
+            is_news = col_slug == "news-and-current-affairs"
+            if is_movie:
+                ok_types = {"MOVIE"}
+            elif is_news:
+                ok_types = {"TV_SERIES", "NEWS_SERIES"}
+            else:
+                ok_types = {"TV_SERIES"}
+            out = []
+            cursor = ""
+            for _ in range(20):
+                qs = f"limit=100{'&cursor=' + cursor if cursor else ''}"
+                req = _ur.Request(f"https://catalogue.pr.sbsod.com/collections/{col_slug}?{qs}", headers=HDRS)
+                with _ur.urlopen(req, timeout=20) as r:
+                    data = _json.loads(r.read().decode())
+                for item in (data.get("items") or []):
+                    etype = item.get("entityType") or ""
+                    if etype not in ok_types:
+                        continue
+                    slug = item.get("slug") or ""
+                    title = item.get("title") or ""
+                    if not slug or not title:
+                        continue
+                    if is_movie:
+                        url = f"https://www.sbs.com.au/ondemand/movie/{slug}"
+                    elif etype == "NEWS_SERIES":
+                        url = f"https://www.sbs.com.au/ondemand/news-series/{slug}"
+                    else:
+                        url = f"https://www.sbs.com.au/ondemand/tv-series/{slug}"
+                    out.append({"title": title, "synopsis": item.get("description") or "", "url": url})
+                cursor = (data.get("meta") or {}).get("nextCursor") or ""
+                if not cursor:
+                    break
+            return sorted(out, key=lambda s: s["title"])
+
+        elif cat_id.startswith("sbs-page:"):
+            page_slug = cat_id.split(":", 1)[1]
+            req = _ur.Request(f"https://catalogue.pr.sbsod.com/pages/{page_slug}?limit=10", headers=HDRS)
+            with _ur.urlopen(req, timeout=20) as r:
+                data = _json.loads(r.read().decode())
+            seen = set()
+            out = []
+            for sec in (data.get("sections") or []):
+                if sec.get("displayType") == "SHORTCUT_BAR":
+                    continue
+                for item in (sec.get("items") or []):
+                    if item.get("entityType") != "TV_SERIES":
+                        continue
+                    slug = item.get("slug") or ""
+                    title = item.get("title") or ""
+                    if not slug or not title or slug in seen:
+                        continue
+                    seen.add(slug)
+                    out.append({"title": title,
+                                "synopsis": item.get("description") or "",
+                                "url": f"https://www.sbs.com.au/ondemand/tv-series/{slug}"})
+            return sorted(out, key=lambda s: s["title"])
+
+        return []
 
 
 class BrowseWorker(QThread):
@@ -2319,12 +4568,42 @@ class BrowseWorker(QThread):
                 episodes = self._tubi(url)
             elif svc == "TVNZ":
                 episodes = self._tvnz(url)
+            elif svc == "NINE":
+                episodes = self._nine(url)
+            elif svc == "NBC":
+                episodes = self._nbc(url)
             elif svc == "NRK":
                 episodes = self._nrk(url)
             elif svc == "ARD":
                 episodes = self._ard(url)
             elif svc == "ZDF":
                 episodes = self._zdf(url)
+            elif svc == "RKTN":
+                episodes = self._rktn(url)
+            elif svc == "VM":
+                episodes = self._vm(url)
+            elif svc == "ROKU":
+                episodes = self._roku(url)
+            elif svc == "CBS":
+                episodes = self._cbs(url)
+            elif svc == "CWTV":
+                episodes = self._cwtv(url)
+            elif svc == "PBS":
+                episodes = self._pbs(url)
+            elif svc == "CRAV":
+                episodes = self._crav(url)
+            elif svc == "CBC":
+                episodes = self._cbc(url)
+            elif svc == "ThreeNow":
+                episodes = self._threenow(url)
+            elif svc == "AUBC":
+                episodes = self._aubc(url)
+            elif svc == "SEVEN":
+                episodes = self._seven(url)
+            elif svc == "TEN":
+                episodes = self._ten(url)
+            elif svc == "SBS":
+                episodes = self._sbs(url)
             else:
                 self.error.emit(
                     f"Episode listing not yet available for {svc}.\n"
@@ -2401,7 +4680,7 @@ class BrowseWorker(QThread):
 
     def _itvx(self, show_url: str) -> list:
         self.status.emit(f"ITVX: fetching {show_url}")
-        # Use same Dalvik UA as vinefeeder — ITV serves the page fine to this UA
+        # Dalvik UA — ITV serves the page fine to this UA
         html = self._fetch(show_url, headers={
             "Accept": "*/*",
             "user-agent": "Dalvik/2.9.8 (Linux; U; Android 9.9.2; ALE-L94 Build/NJHGGF)",
@@ -2414,7 +4693,7 @@ class BrowseWorker(QThread):
             raise ValueError("Could not find __NEXT_DATA__ in ITVX page.")
         data = json.loads(m.group(1))
 
-        # Pull programmeSlug and programmeId from query section — same as vinefeeder
+        # Pull programmeSlug and programmeId from query section
         query = data.get("query", {})
         programme_slug = query.get("programmeSlug", "")
         programme_id   = query.get("programmeId", "")
@@ -2428,7 +4707,7 @@ class BrowseWorker(QThread):
             except (ValueError, TypeError):
                 s_no = "100"
             for title_item in (series.get("titles") or []):
-                # Use encodedEpisodeId.letterA exactly as vinefeeder does
+                # Use encodedEpisodeId.letterA for the episode URL fragment
                 letter_a = (title_item.get("encodedEpisodeId") or {}).get("letterA", "")
                 ep_title = title_item.get("episodeTitle") or title_item.get("title") or ""
                 ep_no_raw = title_item.get("episode") or title_item.get("episodeNumber")
@@ -2520,7 +4799,7 @@ class BrowseWorker(QThread):
             brand_url = f"https://vschedules.uktv.co.uk/vod/brand/?slug={slug}"
         hdrs = {"user-agent": "okhttp/4.7.2"}
         data = self._fetch_json(brand_url, hdrs)
-        # UKTV brand API: get series IDs, then fetch each series for episodes (matches vinefeeder U/__init__.py)
+        # UKTV brand API: get series IDs, then fetch each series for episodes
         series_ids = [s["id"] for s in (data.get("series") or []) if s.get("id")]
         episodes = []
         brand_slug = ""
@@ -2547,7 +4826,7 @@ class BrowseWorker(QThread):
         return episodes
 
     def _stv(self, show_url: str) -> list:
-        # Vinefeeder second_fetch: fetch summary page, parse __NEXT_DATA__ for series tabs
+        # Fetch summary page, parse __NEXT_DATA__ for series tabs
         self.status.emit("STV: fetching episode list...")
         import re as _re, json as _json
         hdrs = {
@@ -2636,7 +4915,7 @@ class BrowseWorker(QThread):
         return episodes
 
     def _rte(self, show_url: str) -> list:
-        # Vinefeeder second_fetch: guid → series ID → episodes
+        # RTE: guid → series ID → episodes
         # URL format: https://www.rte.ie/player/{type}/{title_slug}/{guid}
         self.status.emit("RTE: fetching episode list...")
         import re as _re, unicodedata as _ud
@@ -2676,9 +4955,9 @@ class BrowseWorker(QThread):
             synopsis   = result.get("plprogram$shortDescription", "")
             if not ep_guid or not ep_title:
                 continue
-            # Use plprogram$seriesId from the episode itself (matches vinefeeder's URL building)
+            # Use plprogram$seriesId from the episode itself for URL building
             ep_serid = (result.get("plprogram$seriesId") or "").split("/")[-1] or serid
-            # Build slug the same way vinefeeder does
+            # Build slug from episode title
             slug = _re.sub(r"^-|-$", "", _re.sub(r"\W+", "-", ep_title.lower()))
             # Normalize away Irish accented characters
             slug = _ud.normalize("NFKD", slug).encode("ASCII", "ignore").decode()
@@ -2765,6 +5044,183 @@ class BrowseWorker(QThread):
                     "url":       ep_url,
                     "synopsis":  ep.get("description", ""),
                 })
+        return episodes
+
+    def _nine(self, show_url: str) -> list:
+        import re as _re, urllib.parse as _up
+        # Extract series slug from URL e.g. https://www.9now.com.au/travel-guides
+        m = _re.search(r'9now\.com\.au/([a-z0-9-]+)', show_url)
+        if not m:
+            return []
+        series_slug = m.group(1)
+        self.status.emit(f"9Now: fetching series {series_slug}…")
+        hdrs = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://www.9now.com.au",
+            "Referer": "https://www.9now.com.au/",
+        }
+        series_data = self._fetch_json(
+            f"https://tv-api.9now.com.au/v2/pages/tv-series/{series_slug}?device=web",
+            headers=hdrs,
+        )
+        seasons = [s.get("slug") for s in series_data.get("seasons", []) if s.get("slug")]
+        episodes = []
+        for season_slug in seasons:
+            ep_data = self._fetch_json(
+                f"https://tv-api.9now.com.au/v2/pages/tv-series/{series_slug}/seasons/{season_slug}/episodes/?device=web",
+                headers=hdrs,
+            )
+            for ep in ep_data.get("episodes", {}).get("items", []):
+                video = ep.get("video") or {}
+                if not video.get("brightcoveId"):
+                    continue
+                ep_num = ep.get("episodeNumber", 0)
+                link = (ep.get("link") or {}).get("webUrl", "")
+                ep_url = f"https://www.9now.com.au{link}" if link.startswith("/") else link
+                season_no = season_slug
+                m_sn = _re.search(r"season-(\d+)", season_slug)
+                if m_sn:
+                    season_no = m_sn.group(1)
+                episodes.append({
+                    "series_no": season_no,
+                    "title":     f"Episode {ep_num}: {ep.get('name') or ep.get('displayName', '')}",
+                    "url":       ep_url,
+                    "synopsis":  ep.get("description", ""),
+                })
+        return episodes
+
+    def _nbc(self, show_url: str) -> list:
+        import re as _re, json as _json, urllib.request as _req, urllib.parse as _up, gzip as _gz
+
+        m = _re.search(r'nbc\.com/([a-z0-9][a-z0-9-]+)', show_url)
+        slug = m.group(1) if m else None
+
+        # Step 1: fetch PRELOAD from the show HTML page
+        show_title = None
+        sections   = []
+        self.status.emit("NBC: fetching show page…")
+        hdrs = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,*/*",
+            "Accept-Encoding": "gzip, deflate",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Origin": "https://www.nbc.com",
+            "Referer": "https://www.nbc.com/",
+        }
+        try:
+            req = _req.Request(show_url, headers=hdrs)
+            with _req.urlopen(req, timeout=20) as resp:
+                raw = resp.read()
+                if resp.headers.get("Content-Encoding") == "gzip":
+                    raw = _gz.decompress(raw)
+                html = raw.decode("utf-8", errors="replace")
+            marker = "PRELOAD="
+            start = html.find(marker + "{")
+            if start >= 0:
+                start += len(marker)
+                end = html.find("</script>", start)
+                preload = _json.loads(html[start:end].strip().rstrip(";"))
+                page = next(iter((preload.get("pages") or {}).values()), None)
+                if page:
+                    base = page.get("base") or {}
+                    sections  = (base.get("data") or {}).get("sections") or []
+                    show_title = (base.get("metadata") or {}).get("shortTitle")
+        except Exception:
+            pass
+
+        # Step 2: parse episodes from PRELOAD sections
+        episodes = []
+        for section in sections:
+            if section.get("component") != "LinksSelectableGroup":
+                continue
+            if (section.get("data") or {}).get("optionalTitle") != "Episodes":
+                continue
+            for shelf in (section.get("data") or {}).get("items") or []:
+                for tile in (shelf.get("data") or {}).get("items") or []:
+                    tile_data = tile.get("data") or {}
+                    if tile_data.get("programmingType") != "Full Episode":
+                        continue
+                    permalink = (tile_data.get("permalink") or "").replace("http://", "https://")
+                    if not permalink:
+                        continue
+                    season_n  = tile_data.get("seasonNumber", 0)
+                    episode_n = tile_data.get("episodeNumber", 0)
+                    name      = tile_data.get("secondaryTitle") or tile_data.get("title") or ""
+                    episodes.append({
+                        "series_no": str(season_n),
+                        "title":     f"S{int(season_n):02d}E{int(episode_n):02d}: {name}" if season_n else name,
+                        "url":       permalink,
+                        "synopsis":  tile_data.get("description", ""),
+                    })
+
+        # Step 3: if PRELOAD had no episodes, fall back to Algolia episode index
+        if not episodes and slug:
+            self.status.emit("NBC: fetching episode list via Algolia…")
+            algolia_url  = "https://3nkvntt7f3-dsn.algolia.net/1/indexes/*/queries"
+            app_id       = "3NKVNTT7F3"
+            api_key      = "c2df90d0ff616a2726139c671d6e6e8e"
+            index        = "prod_multi-brand-unified-web"
+            algolia_hdrs = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Content-Type": "application/json",
+                "x-algolia-api-key": api_key,
+                "x-algolia-application-id": app_id,
+                "Origin": "https://www.nbc.com",
+            }
+
+            def _algolia_ep_fetch(query="", facet_filter=None):
+                hits = []
+                facets = ["algoliaProperties.entityType:episodes"]
+                if facet_filter:
+                    facets.append(facet_filter)
+                page_num = 0
+                while True:
+                    params = _up.urlencode({
+                        "query": query,
+                        "facetFilters": _json.dumps(facets),
+                        "hitsPerPage": 100,
+                        "page": page_num,
+                    })
+                    body = _json.dumps({"requests": [{"indexName": index, "params": params}]}).encode()
+                    req = _req.Request(algolia_url, data=body, headers=algolia_hdrs, method="POST")
+                    with _req.urlopen(req, timeout=20) as resp:
+                        result = _json.loads(resp.read().decode("utf-8"))
+                    result0 = result["results"][0]
+                    hits.extend(result0.get("hits") or [])
+                    if page_num + 1 >= result0.get("nbPages", 1):
+                        break
+                    page_num += 1
+                return hits
+
+            try:
+                algolia_hits = _algolia_ep_fetch(facet_filter=f"series.urlAlias:{slug}")
+                if not algolia_hits and show_title:
+                    algolia_hits = _algolia_ep_fetch(query=show_title)
+                for h in algolia_hits:
+                    ep_data   = h.get("episegment") or {}
+                    video     = h.get("video") or {}
+                    season    = h.get("season") or {}
+                    prog_type = ep_data.get("programmingType")
+                    if prog_type is not None:
+                        pt = prog_type if isinstance(prog_type, str) else (prog_type[0] if prog_type else "")
+                        if pt != "Full Episode":
+                            continue
+                    permalink = (video.get("permalink") or "").replace("http://", "https://")
+                    if not permalink:
+                        continue
+                    season_n  = season.get("seasonNumber", 0)
+                    episode_n = ep_data.get("episodeNumber", 0)
+                    name      = ep_data.get("title") or ""
+                    episodes.append({
+                        "series_no": str(season_n),
+                        "title":     f"S{int(season_n):02d}E{int(episode_n):02d}: {name}" if season_n else name,
+                        "url":       permalink,
+                        "synopsis":  ep_data.get("shortDescription", ""),
+                    })
+            except Exception as e:
+                self.status.emit(f"NBC: Algolia episode fetch failed: {e}")
+
         return episodes
 
     def _tvnz(self, show_url: str) -> list:
@@ -2866,6 +5322,76 @@ class BrowseWorker(QThread):
                     "title":     f"S{ep_snum:02}E{ep_num:02} {ep_title}".strip(),
                     "url":       f"https://tvnz.co.nz/tvepisode/{ep_nu}",
                     "synopsis":  ep_syn,
+                })
+        return episodes
+
+    def _rktn(self, show_url: str) -> list:
+        import re as _re, urllib.parse as _up, time as _time
+        # Rakuten TV movies go direct to download — only TV shows reach this path
+        if "/movies/" in show_url:
+            return []
+        m = _re.search(r'rakuten\.tv/(?:[a-z]+/)?tv_shows/([a-z0-9][a-z0-9-]+)', show_url)
+        if not m:
+            return []
+        show_slug = m.group(1)
+
+        # --- Step 1: authenticate ---
+        self.status.emit("Rakuten TV: authenticating…")
+        sess = _rktn_pair_device()
+
+        # --- Step 2: fetch show info (seasons list) ---
+        self.status.emit(f"Rakuten TV: fetching show '{show_slug}'…")
+        base_params = {
+            "classification_id": sess["classification_id"],
+            "device_identifier": sess["device_identifier"],
+            "device_serial":     sess["device_serial"],
+            "locale":            sess["locale"],
+            "market_code":       sess["market_code"],
+            "session_uuid":      sess["session_uuid"],
+            "timestamp":         str(int(_time.time())) + "005",
+            "support_closed_captions": "true",
+        }
+        qs = _up.urlencode(base_params)
+        # Try tv_shows endpoint for show overview first, fall back to seasons
+        seasons = []
+        for ep_base in ("tv_shows", "seasons"):
+            try:
+                show_data = self._fetch_json(f"https://gizmo.rakuten.tv/v3/{ep_base}/{show_slug}?{qs}")
+                data_obj  = show_data.get("data") or {}
+                tv_show   = data_obj.get("tv_show") or data_obj
+                seasons   = tv_show.get("seasons") or []
+                if seasons:
+                    break
+            except Exception:
+                continue
+
+        # --- Step 3: fetch episodes for each season ---
+        episodes = []
+        for season in seasons:
+            season_id  = season.get("id", "")
+            if not season_id:
+                continue
+            # season_number field varies — fall back to parsing slug (e.g. "sanctuary-1" → 1)
+            season_num = season.get("season_number") or season.get("number") or 0
+            if not season_num:
+                sn_m = _re.search(r'-(\d+)$', season_id)
+                season_num = int(sn_m.group(1)) if sn_m else 0
+            self.status.emit(f"Rakuten TV: fetching season {season_num}…")
+            qs2 = _up.urlencode({**base_params, "timestamp": str(int(_time.time())) + "005"})
+            season_data = self._fetch_json(f"https://gizmo.rakuten.tv/v3/seasons/{season_id}?{qs2}")
+            for ep in (season_data.get("data") or {}).get("episodes") or []:
+                ep_id    = ep.get("id", "")
+                ep_num   = ep.get("number", 0)
+                ep_title = ep.get("title") or ep.get("display_name") or f"Episode {ep_num}"
+                if not ep_id:
+                    continue
+                ep_url = (f"https://www.rakuten.tv/uk/tv_shows/{show_slug}"
+                          f"/episodes/stream/{season_id}/{ep_id}")
+                episodes.append({
+                    "series_no": str(season_num),
+                    "title":     f"S{int(season_num):02d}E{int(ep_num):02d}: {ep_title}" if season_num else ep_title,
+                    "url":       ep_url,
+                    "synopsis":  ep.get("short_plot", ""),
                 })
         return episodes
 
@@ -3081,11 +5607,751 @@ class BrowseWorker(QThread):
                 })
         return episodes
 
+    def _roku(self, url: str) -> list:
+        import re as _re, urllib.request as _ur, json as _json
+        HDRS = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept":     "application/json, text/plain, */*",
+            "Origin":     "https://therokuchannel.roku.com",
+            "Referer":    "https://therokuchannel.roku.com/",
+        }
+        CONTENT_BASE = (
+            "https://therokuchannel.roku.com/api/v2/homescreen/content/"
+            "https%3A%2F%2Fcontent.sr.roku.com%2Fcontent%2Fv1%2Froku-trc%2F"
+        )
+
+        def _fetch(cid):
+            req = _ur.Request(f"{CONTENT_BASE}{cid}", headers=HDRS)
+            with _ur.urlopen(req, timeout=20) as r:
+                raw = r.read()
+                if not raw.strip():
+                    raise RuntimeError("Empty response — Roku content API is geofenced to the US")
+                return _json.loads(raw.decode("utf-8"))
+
+        def _slugify(s):
+            return _re.sub(r"[^a-z0-9]+", "-", str(s).lower()).strip("-") or "episode"
+
+        m = _re.search(r"/details/([a-z0-9-]+)", url)
+        if not m:
+            return []
+        series_id = m.group(1)
+
+        data = _fetch(series_id)
+        if data.get("type") in ("movie", "tvspecial"):
+            return []  # movies route via _on_show_selected before reaching here
+
+        ep_stubs = data.get("episodes") or []
+        episodes  = []
+        seen      = set()
+
+        self.status.emit(f"Roku: fetching {len(ep_stubs)} episode(s)…")
+        for stub in ep_stubs:
+            ep_id = (stub.get("meta") or {}).get("id", "")
+            if not ep_id or ep_id in seen:
+                continue
+            seen.add(ep_id)
+            try:
+                ep = _fetch(ep_id)
+            except Exception:
+                ep = stub
+            s_no   = str(ep.get("seasonNumber") or stub.get("seasonNumber") or 0)
+            ep_num = ep.get("episodeNumber") or stub.get("episodeNumber") or 0
+            title  = ep.get("title") or stub.get("title") or f"Episode {ep_num}"
+            label  = f"Ep {ep_num}: {title}" if ep_num else title
+            ep_url = f"https://therokuchannel.roku.com/details/{ep_id}/{_slugify(title)}"
+            episodes.append({
+                "series_no": s_no,
+                "title":     label,
+                "synopsis":  (ep.get("descriptions") or {}).get("250", {}).get("text") or "",
+                "url":       ep_url,
+            })
+        return episodes
+
+    def _cbs(self, url: str) -> list:
+        import re as _re, urllib.request as _ur, json as _json, urllib.parse as _up
+        BASE  = "https://cbsdigital.cbs.com"
+        TOKEN = "ABBsaBMagMmYLUc9iXB0lXEKsUQ0/MwRn6z3Tg0KKQaH7Q6QGqJcABwlBP4XiMR1b0Q="
+        HDRS  = {
+            "User-Agent": "Mozilla/5.0 (Linux; Android 13; SM-A536E) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Mobile Safari/537.36",
+            "Accept":     "application/json",
+        }
+
+        def _get(path, params=None):
+            p = {"at": TOKEN}
+            if params:
+                p.update(params)
+            req = _ur.Request(f"{BASE}{path}?{_up.urlencode(p)}", headers=HDRS)
+            with _ur.urlopen(req, timeout=20) as r:
+                return _json.loads(r.read().decode("utf-8"))
+
+        # Direct episode URL: /shows/video/{id}/
+        ep_m = _re.search(r"/shows/video/([A-Za-z0-9_-]+)", url)
+        if ep_m:
+            return []  # single episode — opts panel handles it
+
+        # Series URL: /shows/{slug}/
+        slug_m = _re.search(r"/shows/([^/?#]+)/?$", url)
+        if not slug_m:
+            return []
+        slug = slug_m.group(1)
+
+        # 1. Get show metadata and season list
+        show_data = _get(f"/apps-api/v3.0/androidphone/shows/slug/{slug}.json")
+        links = next(
+            (x.get("links") for x in (show_data.get("showMenu") or [])
+             if x.get("device_app_id") == "all_platforms"),
+            None,
+        )
+        config = None
+        if links:
+            config = next(
+                (x.get("videoConfigUniqueName") for x in links
+                 if (x.get("title") or "").strip() == "Episodes"),
+                None,
+            )
+        show_obj = next(
+            (x for x in (show_data.get("show") or {}).get("results", [])
+             if (x.get("type") or "").strip() == "show"),
+            None,
+        )
+        if not show_obj or not config:
+            raise RuntimeError("Could not find show data — check the URL is a CBS series page")
+
+        show_id = show_obj.get("show_id")
+        seasons = [x.get("seasonNum") for x in
+                   (show_data.get("available_video_seasons") or {}).get("itemList", [])]
+
+        # 2. Get section ID for "Full Episodes"
+        section_data = _get(
+            f"/apps-api/v2.0/androidphone/shows/{show_id}/videos/config/{config}.json",
+            {"platformType": "apps", "rows": "1", "begin": "0"},
+        )
+        section = next(
+            (x["sectionId"] for x in (section_data.get("videoSectionMetadata") or [])
+             if x.get("title") == "Full Episodes"),
+            None,
+        )
+        if not section:
+            raise RuntimeError("Could not find episode section for this show")
+
+        # 3. Fetch episodes per season
+        episodes = []
+        for season in seasons:
+            res = _get(
+                f"/apps-api/v2.0/androidphone/videos/section/{section}.json",
+                {"begin": "0", "rows": "999", "params": f"seasonNum={season}", "seasonNum": season},
+            )
+            for ep in (res.get("sectionItems") or {}).get("itemList", []):
+                if not ep.get("fullEpisode"):
+                    continue
+                cid     = ep.get("contentId", "")
+                s_no    = str(ep.get("seasonNum", 0))
+                ep_num  = ep.get("episodeNum") or ep.get("positionNum") or 0
+                title   = ep.get("label") or f"Episode {ep_num}"
+                label   = f"Ep {ep_num}: {title}" if ep_num else title
+                episodes.append({
+                    "series_no": s_no,
+                    "title":     label,
+                    "synopsis":  ep.get("description") or "",
+                    "url":       f"https://www.cbs.com/shows/video/{cid}/",
+                })
+        return episodes
+
+    def _cwtv(self, url: str) -> list:
+        import re as _re, urllib.request as _ur, json as _json
+        HDRS = {"User-Agent": "Mozilla/5.0 (Linux; Android 11; Smart TV Build/AR2101; wv)",
+                "Accept": "application/json"}
+        m = _re.search(r"/(?:shows|series)/([^/?#]+)", url)
+        if not m:
+            return []
+        slug = m.group(1)
+        req = _ur.Request(
+            f"https://data.cwtv.com/feed/app-2/videos/show_{slug}/type_episodes/apiversion_25/device_androidtv",
+            headers=HDRS,
+        )
+        with _ur.urlopen(req, timeout=20) as r:
+            data = _json.loads(r.read().decode("utf-8"))
+        episodes = []
+        for ep in data.get("items") or []:
+            if ep.get("fullep") != 1:
+                continue
+            vid = ep.get("bc_video_id") or ""
+            if not vid:
+                continue
+            s_no   = str(ep.get("season") or 0)
+            ep_num = int(ep.get("episode_in_season") or 0)
+            title  = ep.get("title") or f"Episode {ep_num}"
+            label  = f"Ep {ep_num}: {title}" if ep_num else title
+            ep_url = f"https://www.cwtv.com/series/{slug}/?play={vid}"
+            episodes.append({
+                "series_no": s_no,
+                "title":     label,
+                "synopsis":  ep.get("description_long") or ep.get("description") or "",
+                "url":       ep_url,
+            })
+        return episodes
+
+    def _pbs(self, url: str) -> list:
+        import re as _re, urllib.request as _ur, json as _json
+        import http.cookiejar as _cj, os as _os
+        UA   = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:149.0) Gecko/20100101 Firefox/149.0"
+        HDRS = {"User-Agent": UA, "Accept": "application/json, text/html, */*"}
+        UUID_PAT = r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}'
+
+        m = _re.search(r"/show/([^/?#]+)", url)
+        if not m:
+            return []
+        slug = m.group(1)
+
+        # Load PBS cookies for Passport authentication if available
+        from pathlib import Path as _Path
+        jar = _cj.MozillaCookieJar()
+        _cfg = load_config()
+        cookie_path = _Path(_cfg.get("install_dir", "")) / "Cookies" / "PBS.txt"
+        if cookie_path.exists():
+            jar.load(str(cookie_path), ignore_discard=True, ignore_expires=True)
+        opener = _ur.build_opener(_ur.HTTPCookieProcessor(jar))
+
+        def _get(u):
+            req = _ur.Request(u, headers=HDRS)
+            with opener.open(req, timeout=20) as r:
+                return _json.loads(r.read().decode("utf-8"))
+
+        # Parse season CIDs from show page HTML
+        req = _ur.Request(f"https://www.pbs.org/show/{slug}/", headers=HDRS)
+        with opener.open(req, timeout=20) as r:
+            html = r.read().decode("utf-8")
+
+        seasons = []
+        seen_cids = set()
+        for url_m in _re.finditer(
+            r'pbsorg/screens/shows/[^/]+/seasons/(' + UUID_PAT + r')/', html
+        ):
+            cid = url_m.group(1)
+            if cid in seen_cids:
+                continue
+            seen_cids.add(cid)
+            window = html[max(0, url_m.start() - 800):url_m.start()]
+            all_ords = _re.findall(r'ordinal[\\\"]*\s*:\s*(\d+)', window)
+            ordinal  = int(all_ords[-1]) if all_ords else (len(seasons) + 1)
+            seasons.append((cid, ordinal))
+        seasons.sort(key=lambda x: x[1], reverse=True)
+
+        episodes = []
+        for season_cid, season_num in seasons:
+            try:
+                eps = _get(f"https://www.pbs.org/api/show/{slug}/season/{season_cid}/episodes/")
+            except Exception:
+                continue
+            for ep in (eps if isinstance(eps, list) else []):
+                ep_slug = ep.get("slug") or ""
+                if not ep_slug:
+                    continue
+                parent  = ep.get("parent") or {}
+                ep_num  = int(parent.get("ordinal") or 0)
+                title   = ep.get("title") or f"Episode {ep_num}"
+                label   = f"Ep {ep_num}: {title}" if ep_num else title
+                episodes.append({
+                    "series_no": str(season_num),
+                    "title":     label,
+                    "synopsis":  ep.get("description_short") or "",
+                    "url":       f"https://www.pbs.org/video/{ep_slug}/",
+                })
+
+        # Fetch specials (season 0)
+        try:
+            specials = _get(f"https://www.pbs.org/api/show/{slug}/specials/")
+            if isinstance(specials, list):
+                specials.sort(key=lambda x: x.get("premiere_date") or "")
+                for i, sp in enumerate(specials, start=1):
+                    ep_slug = sp.get("slug") or ""
+                    if not ep_slug or sp.get("slug") == sp.get("parent", {}).get("slug"):
+                        continue
+                    title = sp.get("title") or f"Special {i}"
+                    episodes.append({
+                        "series_no": "0",
+                        "title":     f"Special {i}: {title}",
+                        "synopsis":  sp.get("description_short") or "",
+                        "url":       f"https://www.pbs.org/video/{ep_slug}/",
+                    })
+        except Exception:
+            pass
+
+        return episodes
+
+    def _crav(self, url: str) -> list:
+        import re as _re, urllib.request as _ur, json as _json
+        token = _crav_get_graphql_token()
+        if not token:
+            raise RuntimeError("No CRAV credentials found. Add username/password to EnvyCore/Cookies/CRAV.txt.")
+        HDRS = {
+            "User-Agent":    "Dalvik/2.1.0 (Linux; U; Android 11; SHIELD Android TV Build/RQ1A.210105.003)",
+            "Content-Type":  "application/json",
+            "Accept":        "*/*",
+            "authorization": f"Bearer {token}",
+        }
+        SESSION_CTX = {"userMaturity": "ADULT", "userLanguage": "EN"}
+
+        # Extract numeric media ID from URL, e.g. /en/series/succession-58324 → 58324
+        m = _re.search(r'-(\d+)(?:/|$)', url)
+        if not m:
+            return []
+        media_id = m.group(1)
+
+        def _gql(payload):
+            req = _ur.Request("https://rte-api.bellmedia.ca/graphql",
+                              data=_json.dumps(payload).encode(), headers=HDRS)
+            with _ur.urlopen(req, timeout=20) as r:
+                return _json.loads(r.read().decode())
+
+        # Step 1: get show seasons
+        self.status.emit("Crave: fetching season list…")
+        show_data = _gql({
+            "query": (
+                "query GetShowpage($sessionContext:SessionContext!,$ids:[String!]!){"
+                "medias(sessionContext:$sessionContext ids:$ids){"
+                "title seasons{id title seasonNumber}}}"
+            ),
+            "variables": {"ids": [media_id], "sessionContext": SESSION_CTX},
+        })
+        medias = ((show_data.get("data") or {}).get("medias") or [])
+        if not medias:
+            return []
+        seasons = medias[0].get("seasons") or []
+
+        # Step 2: fetch episodes per season using contentsBySeasonId (returns all episodes)
+        GQL_EPS = (
+            "query GetContentBySeasonId($sessionContext:SessionContext!,$id:String!,$contentFormat:ContentFormatRequest){"
+            "contentsBySeasonId(sessionContext:$sessionContext id:$id contentFormat:$contentFormat){"
+            "id title episodeNumber seasonNumber path shortDescription}}"
+        )
+        episodes = []
+        for season in seasons:
+            season_id  = season.get("id") or ""
+            season_num = season.get("seasonNumber") or 0
+            if not season_id:
+                continue
+            self.status.emit(f"Crave: fetching season {season_num}…")
+            try:
+                eps_data = _gql({
+                    "query":     GQL_EPS,
+                    "variables": {
+                        "id":            season_id,
+                        "sessionContext": SESSION_CTX,
+                        "contentFormat": {"format": "LONGFORM"},
+                    },
+                })
+                for item in (eps_data.get("data") or {}).get("contentsBySeasonId") or []:
+                    path   = item.get("path") or ""
+                    title  = item.get("title") or ""
+                    ep_num = int(item.get("episodeNumber") or 0)
+                    if not path:
+                        continue
+                    label = f"Ep {ep_num}: {title}" if ep_num else title
+                    episodes.append({
+                        "series_no": str(season_num),
+                        "title":     label,
+                        "synopsis":  item.get("shortDescription") or "",
+                        "url":       f"https://www.crave.ca/{path.lstrip('/')}",
+                    })
+            except Exception:
+                continue
+        return episodes
+
+    def _cbc(self, url: str) -> list:
+        import re as _re, urllib.request as _ur, json as _json
+        m = _re.match(r"^(?:https?://(?:www\.)?gem\.cbc\.ca/)?([a-zA-Z0-9_-]+)", url)
+        if not m:
+            return []
+        slug = m.group(1)
+        BASE = "https://services.radio-canada.ca"
+        req = _ur.Request(f"{BASE}/ott/catalog/v2/gem/show/{slug}?device=web",
+                          headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
+        with _ur.urlopen(req, timeout=20) as r:
+            data = _json.loads(r.read().decode())
+        content_type = (data.get("contentType") or "").lower()
+        content = data.get("content") or []
+        episodes = []
+        if content_type in ("film", "movie", "standalone"):
+            # Single movie — find the first lineup with items
+            for section in content:
+                if (section.get("title") or "").lower() in ("episodes", "trailers", "extras"):
+                    continue
+                for lineup in (section.get("lineups") or []):
+                    for item in (lineup.get("items") or []):
+                        item_url = item.get("url") or ""
+                        title    = item.get("title") or ""
+                        if not item_url or not title:
+                            continue
+                        if not item_url.startswith("http"):
+                            item_url = f"https://gem.cbc.ca/{item_url.lstrip('/')}"
+                        episodes.append({"series_no": "0", "title": title,
+                                         "synopsis": item.get("description") or "", "url": item_url})
+                if episodes:
+                    break
+        else:
+            # Series — find Episodes / Parts section
+            ep_section = next(
+                (s for s in content if (s.get("title") or "").lower() in ("episodes", "parts")), None
+            )
+            if not ep_section:
+                return []
+            for lineup in (ep_section.get("lineups") or []):
+                season_num = str(lineup.get("seasonNumber") or 0)
+                for item in (lineup.get("items") or []):
+                    if (item.get("mediaType") or "").lower() != "episode":
+                        continue
+                    item_url = item.get("url") or ""
+                    raw_title = item.get("title") or ""
+                    ep_num    = int(item.get("episodeNumber") or 0)
+                    if not item_url:
+                        continue
+                    # title is often "S1E1. Episode name" — strip the prefix
+                    parts = raw_title.split(".", 1)
+                    ep_name = parts[1].strip() if len(parts) > 1 else parts[0].strip()
+                    label = f"Ep {ep_num}: {ep_name}" if ep_num else ep_name
+                    if not item_url.startswith("http"):
+                        item_url = f"https://gem.cbc.ca/{item_url.lstrip('/')}"
+                    episodes.append({"series_no": season_num, "title": label,
+                                     "synopsis": item.get("description") or "", "url": item_url})
+        return episodes
+
+    def _threenow(self, url: str) -> list:
+        import re as _re, urllib.request as _ur, json as _json
+        # Extract show_id — last path segment, e.g. .../shows/big-mood/1713218432373
+        m = _re.search(r'/([A-Za-z0-9][A-Za-z0-9_-]*)/?(?:\?.*)?$', url)
+        if not m:
+            return []
+        show_id = m.group(1)
+        req = _ur.Request(
+            f"https://now-api.fullscreen.nz/v5/shows/{show_id}",
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+        )
+        with _ur.urlopen(req, timeout=20) as r:
+            data = _json.loads(r.read().decode())
+        episodes = []
+        for season in (data.get("seasons") or []):
+            season_num = str(season.get("seasonNumber") or 0)
+            for ep in (season.get("episodes") or []):
+                ep_num  = int(ep.get("episode") or 0)
+                title   = ep.get("name") or ep.get("title") or ""
+                video_id = ep.get("videoId") or ""
+                if not video_id:
+                    continue
+                label = f"Ep {ep_num}: {title}" if ep_num and title else (title or f"Ep {ep_num}")
+                episodes.append({
+                    "series_no": season_num,
+                    "title":     label,
+                    "synopsis":  ep.get("synopsis") or "",
+                    "url":       f"https://www.threenow.co.nz/shows/{show_id}/{video_id}",
+                })
+        return episodes
+
+    def _aubc(self, url: str) -> list:
+        import re as _re, urllib.request as _ur, json as _json
+        # URL: https://iview.abc.net.au/show/{slug}
+        m = _re.search(r'/show/([A-Za-z0-9][A-Za-z0-9_-]*)/?(?:\?.*)?$', url)
+        if not m:
+            return []
+        slug = m.group(1)
+        BASE = "https://api.iview.abc.net.au"
+        HDRS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json",
+                "accept-language": "en-US,en;q=0.8"}
+        # Check show type
+        req = _ur.Request(f"{BASE}/v3/show/{slug}", headers=HDRS)
+        with _ur.urlopen(req, timeout=20) as r:
+            show_data = _json.loads(r.read().decode())
+        label = (show_data.get("type") or "").lower()
+        if label in ("feature", "movie"):
+            # Single movie — return as one entry
+            title = show_data.get("title") or slug
+            return [{"series_no": "0", "title": title, "synopsis": show_data.get("description") or "", "url": url}]
+        # Series — fetch all seasons
+        req2 = _ur.Request(f"{BASE}/v3/series/{slug}", headers=HDRS)
+        with _ur.urlopen(req2, timeout=30) as r:
+            series_data = _json.loads(r.read().decode())
+        seasons = series_data if isinstance(series_data, list) else [series_data]
+        # De-duplicate seasons by id
+        seen_ids = set()
+        unique_seasons = []
+        for s in seasons:
+            sid = s.get("id")
+            if sid not in seen_ids:
+                seen_ids.add(sid)
+                unique_seasons.append(s)
+        episodes = []
+        for season in unique_seasons:
+            series_id = season.get("id") or ""
+            # Season number from series_id suffix, e.g. "show-slug-2" → 2
+            season_num = str(int(series_id.rsplit("-", 1)[-1])) if series_id and series_id.rsplit("-", 1)[-1].isdigit() else "0"
+            for ep in (season.get("_embedded") or {}).get("videoEpisodes", {}).get("items") or []:
+                ep_id = ep.get("id") or ""
+                if not ep_id:
+                    continue
+                ep_num_m = _re.search(r"Episode (\d+)", ep.get("displaySubtitle") or "")
+                ep_num   = int(ep_num_m.group(1)) if ep_num_m else 0
+                # Episode name from d_episode_name, strip "S\d+ Episode \d+ " prefix
+                ep_name_raw = (ep.get("analytics") or {}).get("dataLayer", {}).get("d_episode_name") or ""
+                name_m = _re.search(r"S\d+\s+Episode\s+\d+\s+(.*)", ep_name_raw)
+                ep_name = name_m.group(1).strip() if name_m else (ep.get("displaySubtitle") or "")
+                label_str = f"Ep {ep_num}: {ep_name}" if ep_num and ep_name else ep_name or f"Ep {ep_num}"
+                episodes.append({
+                    "series_no": season_num,
+                    "title":     label_str,
+                    "synopsis":  ep.get("description") or "",
+                    "url":       f"https://iview.abc.net.au/video/{ep_id}",
+                })
+        return episodes
+
+    def _seven(self, url: str) -> list:
+        import re as _re, urllib.request as _ur, urllib.parse as _up, json as _json
+        # URL: https://7plus.com.au/{slug}
+        m = _re.match(r'https?://7plus\.com\.au/([^?/#]+)', url)
+        if not m:
+            return []
+        slug = m.group(1)
+        HDRS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json",
+                "x-swm-apikey": "kGcrNnuPClrkynfnKwG8IA/NhVG6ut5nPEdWF2jscvE="}
+        # Get market_id
+        mreq = _ur.Request("https://market-cdn.swm.digital/v1/market/ip?apikey=web", headers=HDRS)
+        try:
+            with _ur.urlopen(mreq, timeout=8) as r:
+                market_id = _json.loads(r.read().decode()).get("_id", 4)
+        except Exception:
+            market_id = 4
+        base_params = _up.urlencode({
+            "platform-id": "androidtv", "market-id": market_id,
+            "platform-version": "5.25.0.0", "api-version": "5.9.0.0",
+        })
+        # Fetch show content page
+        req = _ur.Request(
+            f"https://component-cdn.swm.digital/content/{slug}?{base_params}", headers=HDRS)
+        with _ur.urlopen(req, timeout=20) as r:
+            content = _json.loads(r.read().decode())
+        # Navigate: shelfContainer → Episodes tab → Season/Year/Bulletin → season buttons → inner component id
+        shelf_container = next(
+            (x for x in content.get("items", []) if x.get("type") == "shelfContainer"), {})
+        episodes_shelf = next(
+            (x for x in shelf_container.get("items", []) if x.get("title") == "Episodes"), {})
+        seasons_container = next(
+            (x for x in episodes_shelf.get("items", [])
+             if (x.get("title") or "").lower() in ("season", "year", "bulletin")), {})
+        season_ids = [
+            btn.get("items", [{}])[0].get("id")
+            for btn in seasons_container.get("items", [])
+            if btn.get("items") and btn.get("items")[0].get("id")
+        ]
+        if not season_ids:
+            return []
+        episodes = []
+        for season_id in season_ids:
+            comp_req = _ur.Request(
+                f"https://component.swm.digital/v2/component/{slug}"
+                f"?component-id={season_id}&{base_params}", headers=HDRS)
+            try:
+                with _ur.urlopen(comp_req, timeout=15) as r:
+                    comp = _json.loads(r.read().decode())
+            except Exception:
+                continue
+            for ep in (comp.get("mediaItems") or []):
+                player  = ep.get("playerData") or {}
+                card    = ep.get("cardData") or {}
+                ep_id   = player.get("episodePlayerId") or ""
+                if not ep_id:
+                    continue
+                alt_tag = (card.get("image") or {}).get("altTag") or ""
+                sm = _re.search(r"Season\s+(\d+)\s+Episode\s+(\d+)", alt_tag, _re.IGNORECASE)
+                season_num = sm.group(1) if sm else "0"
+                ep_num     = int(sm.group(2)) if sm else 0
+                # cardData.title is like "4. Soup To Nuts" — strip leading number+period
+                raw_title = card.get("title") or ""
+                title_m = _re.match(r"^\d+\.\s*(.+)", raw_title)
+                ep_name = title_m.group(1).strip() if title_m else raw_title
+                label = f"Ep {ep_num}: {ep_name}" if ep_num and ep_name else (ep_name or f"Ep {ep_num}")
+                episodes.append({
+                    "series_no": season_num,
+                    "title":     label,
+                    "synopsis":  (ep.get("infoPanelData") or {}).get("description") or "",
+                    "url":       f"https://7plus.com.au/{slug}?episode-id={ep_id}",
+                })
+        return episodes
+
+    def _ten(self, url: str) -> list:
+        import re as _re, urllib.request as _ur, json as _json
+        m = _re.match(r'https?://10\.com\.au/([^?/#]+)', url)
+        if not m:
+            return []
+        slug = m.group(1)
+        HDRS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,*/*"}
+        req = _ur.Request(f"https://10.com.au/{slug}", headers=HDRS)
+        with _ur.urlopen(req, timeout=20) as r:
+            html = r.read().decode("utf-8", errors="replace")
+        # Brace-balance extract const showPageData = {...}
+        idx = html.find('const showPageData = ')
+        if idx < 0:
+            return []
+        json_start = html.index('{', idx)
+        depth, json_end = 0, json_start
+        for i, ch in enumerate(html[json_start:], json_start):
+            if ch == '{':   depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    json_end = i + 1
+                    break
+        try:
+            page_data = _json.loads(html[json_start:json_end])
+        except Exception:
+            return []
+        # seasonList is a direct key at the top level
+        season_list = page_data.get("seasonList") or []
+        if not season_list:
+            return []
+        episodes = []
+        API_HDRS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
+        for season in season_list:
+            season_slug = season.get("slug") or ""
+            if not season_slug:
+                continue
+            api_req = _ur.Request(f"https://10.com.au/api/shows/{slug}/episodes/{season_slug}", headers=API_HDRS)
+            try:
+                with _ur.urlopen(api_req, timeout=20) as r:
+                    season_data = _json.loads(r.read().decode())
+            except Exception:
+                continue
+            content = season_data.get("content") or []
+            if not content:
+                continue
+            for comp in (content[0].get("components") or []):
+                if comp.get("title") != "Episodes":
+                    continue
+                for slide in (comp.get("slides") or []):
+                    if slide.get("contentType") != "video":
+                        continue
+                    # cardTitle: "S1 Ep. 1 - Burnt Food"
+                    card_title = slide.get("cardTitle") or ""
+                    sm = _re.search(r'S(\d+)\s+Ep\.?\s*(\d+)\s*[-–]?\s*(.*)', card_title, _re.IGNORECASE)
+                    season_num = sm.group(1) if sm else "0"
+                    ep_num     = int(sm.group(2)) if sm else 0
+                    ep_name    = (sm.group(3) or "").strip() if sm else card_title
+                    label = f"Ep {ep_num}: {ep_name}" if ep_num and ep_name else (ep_name or f"Ep {ep_num}")
+                    card_link = slide.get("cardLink") or ""
+                    episodes.append({
+                        "series_no": season_num,
+                        "title":     label,
+                        "synopsis":  slide.get("cardDescription") or "",
+                        "url":       f"https://10.com.au{card_link}" if card_link else url,
+                    })
+                break
+        return episodes
+
+    def _sbs(self, url: str) -> list:
+        import re as _re, urllib.request as _ur, json as _json
+        HDRS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "application/json", "Origin": "https://www.sbs.com.au"}
+
+        # Movie
+        mm = _re.match(r'https?://www\.sbs\.com\.au/ondemand/movie/([^/?#]+)', url)
+        if mm:
+            movie_slug = mm.group(1)
+            req = _ur.Request(f"https://catalogue.pr.sbsod.com/movies/{movie_slug}", headers=HDRS)
+            with _ur.urlopen(req, timeout=20) as r:
+                data = _json.loads(r.read().decode())
+            title = data.get("title") or movie_slug
+            media_id = data.get("mpxMediaID") or ""
+            movie_url = f"https://www.sbs.com.au/ondemand/movie/{movie_slug}/{media_id}" if media_id else url
+            return [{"series_no": "1", "title": title, "synopsis": data.get("description") or "", "url": movie_url}]
+
+        # TV Series
+        m = _re.match(r'https?://www\.sbs\.com\.au/ondemand/tv-series/([^/?#]+)', url)
+        if not m:
+            return []
+        series_slug = m.group(1)
+        req = _ur.Request(f"https://catalogue.pr.sbsod.com/tv-series/{series_slug}", headers=HDRS)
+        with _ur.urlopen(req, timeout=20) as r:
+            data = _json.loads(r.read().decode())
+        episodes = []
+        for season in (data.get("seasons") or []):
+            s_no = str(season.get("seasonNumber") or "0")
+            for ep in (season.get("episodes") or []):
+                ep_no = ep.get("episodeNumber") or 0
+                media_id = ep.get("mpxMediaID") or ""
+                title = ep.get("title") or ""
+                label = f"Ep {ep_no}: {title}" if ep_no and title else title or f"Ep {ep_no}"
+                ep_url = f"https://www.sbs.com.au/ondemand/tv-series/{series_slug}/{media_id}" if media_id else url
+                episodes.append({
+                    "series_no": s_no,
+                    "title":     label,
+                    "synopsis":  ep.get("description") or "",
+                    "url":       ep_url,
+                })
+        return episodes
+
+    def _vm(self, url: str) -> list:
+        import re as _re, urllib.parse as _up
+        BASE_PARAMS = _up.urlencode({
+            "key":      "821254297041614280861178657602",
+            "cc":       "IE",
+            "lang":     "en",
+            "platform": "chrome",
+        })
+        HEADERS = {
+            "Origin":  "https://play.virginmediatelevision.ie",
+            "Referer": "https://play.virginmediatelevision.ie/",
+        }
+
+        series_m = _re.search(r"/shows/([0-9a-f-]{36})", url, _re.I)
+        if not series_m:
+            return []
+        series_id = series_m.group(1)
+
+        data = None
+        for endpoint in [
+            f"https://v6-metadata-cf.simplestreamcdn.com/api/series/{series_id}?{BASE_PARAMS}",
+            f"https://v6-metadata.simplestreamcdn.com/api/series/{series_id}?{BASE_PARAMS}",
+        ]:
+            try:
+                data = self._fetch_json(endpoint, HEADERS)
+                break
+            except Exception:
+                continue
+        if not data:
+            return []
+
+        series    = ((data.get("response") or {}).get("series") or {})
+        episodes  = []
+        seen      = set()
+
+        def _slugify(s):
+            return _re.sub(r"[^a-z0-9]+", "-", str(s).lower()).strip("-") or "episode"
+
+        for s_idx, season in enumerate(series.get("seasons") or []):
+            # VM API has no numeric season field — use the season title (e.g. "Series 1")
+            s_no = str(season.get("title") or f"Series {s_idx + 1}").strip()
+            for ep in season.get("tiles") or season.get("episodes") or []:
+                # uvid is the downloadable video ID; id can differ
+                vid = str(ep.get("uvid") or ep.get("id") or "")
+                if not vid or vid in seen:
+                    continue
+                seen.add(vid)
+                ep_num   = ep.get("episode") or ep.get("series_episode") or 0
+                ep_title = ep.get("title") or ep.get("name") or f"Episode {ep_num}"
+                label    = f"Ep {ep_num}: {ep_title}" if ep_num else ep_title
+                ep_url   = f"https://play.virginmediatelevision.ie/watch/vod/{vid}/{_slugify(ep_title)}"
+                episodes.append({
+                    "series_no": s_no,
+                    "title":     label,
+                    "synopsis":  ep.get("synopsis") or ep.get("description") or "",
+                    "url":       ep_url,
+                })
+        return episodes
+
 
 class ExtendedServiceWorker(QThread):
     """
-    Runs uv run envied dl [--select-titles] SERVICE URL directly,
-    bypassing VineFeeder entirely. Used by the Extended Services panel.
+    Runs uv run envied dl [--select-titles] SERVICE URL directly.
+    Used by the Extended Services panel.
     select_titles=True patches the envied selector for the Qt episode picker.
     """
     log_line  = pyqtSignal(str)
@@ -3293,21 +6559,20 @@ class _UpdateCheckThread(QThread):
 
     def run(self):
         remote = ""
-        if REQUESTS_AVAILABLE:
-            try:
-                raw_url = (
-                    f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/"
-                    "twinvine_launcher.py"
-                )
-                r = requests.get(raw_url, timeout=10)
-                if r.ok:
-                    import re as _re
-                    m = _re.search(r'^APP_VERSION\s*=\s*["\']([^"\']+)["\']',
-                                    r.text, _re.MULTILINE)
-                    if m:
-                        remote = m.group(1)
-            except Exception:
-                pass
+        try:
+            import urllib.request as _ur, re as _re
+            raw_url = (
+                f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/"
+                "envy_launcher.py"
+            )
+            with _ur.urlopen(raw_url, timeout=10) as resp:
+                text = resp.read().decode("utf-8", errors="replace")
+            m = _re.search(r'^APP_VERSION\s*=\s*["\']([^"\']+)["\']',
+                            text, _re.MULTILINE)
+            if m:
+                remote = m.group(1)
+        except Exception:
+            pass
         self.result_ready.emit(remote, self._local)
 
 
@@ -3557,6 +6822,54 @@ class InstallWorker(QThread):
                 "shaka-packager.exe",
                 None   # not a zip — direct .exe download
             )
+            # ── CCExtractor — closed-caption extraction ───────────────────────
+            if (tools_bin / "ccextractor.exe").exists():
+                self._log("ccextractor.exe already present — skipped.")
+            else:
+                self._log("Downloading CCExtractor...")
+                try:
+                    import json as _ccjson, tempfile as _cctf, zipfile as _cczf
+                    with _urlreq.urlopen(
+                        _urlreq.Request(
+                            "https://api.github.com/repos/CCExtractor/ccextractor/releases/latest",
+                            headers={"User-Agent": "EnvyUI-Installer"},
+                        ), timeout=20
+                    ) as _ccr:
+                        _cc_rel = _ccjson.loads(_ccr.read())
+                    _cc_url = next(
+                        (a["browser_download_url"] for a in _cc_rel.get("assets", [])
+                         if "win" in a["name"].lower() and a["name"].endswith(".zip")),
+                        None,
+                    )
+                    if _cc_url:
+                        _cc_tmp = _cctf.NamedTemporaryFile(delete=False, suffix=".zip")
+                        _cc_tmp.close()
+                        _cc_last = [-1]
+                        def _cc_progress(block_num, block_size, total_size):
+                            if total_size > 0:
+                                pct = min(int(block_num * block_size * 100 / total_size), 100)
+                                if pct != _cc_last[0] and pct % 10 == 0:
+                                    self._log(f"  ccextractor.exe: {pct}%")
+                                    _cc_last[0] = pct
+                        _urlreq.urlretrieve(_cc_url, _cc_tmp.name, reporthook=_cc_progress)
+                        self._log("  ccextractor: download complete — extracting...")
+                        with _cczf.ZipFile(_cc_tmp.name) as _ccz:
+                            # Extract all files flat into tools_bin (skip subdirs)
+                            for member in _ccz.namelist():
+                                fname = Path(member).name
+                                if not fname:
+                                    continue
+                                data = _ccz.read(member)
+                                (tools_bin / fname).write_bytes(data)
+                        self._log(f"CCExtractor installed to {tools_bin}")
+                        try:
+                            import os as _ccos; _ccos.unlink(_cc_tmp.name)
+                        except Exception:
+                            pass
+                    else:
+                        self._log("WARNING: Could not find CCExtractor Windows zip in latest release")
+                except Exception as _cce:
+                    self._log(f"WARNING: Could not download CCExtractor: {_cce}")
             # ── Install MKVToolNix via winget (no admin, no download URL needed) ─
             mkv_dir = tools_bin
             if (tools_bin / "mkvmerge.exe").exists():
@@ -4116,6 +7429,36 @@ class InstallWorker(QThread):
             except Exception as _te:
                 self._log(f"Note: could not patch TEN/__init__.py: {_te}")
 
+            # ── Patch CWTV/__init__.py ────────────────────────────────────────
+            # Episode constructors may not persist language, causing the core
+            # track selector to fall back to "orig" and skip the video track.
+            # Force language="en" at the top of get_tracks to prevent this.
+            _cwtv_init = d / "packages/envied/src/envied/services/CWTV/__init__.py"
+            try:
+                if _cwtv_init.exists():
+                    _cwtv_txt = _cwtv_init.read_text(encoding="utf-8")
+                    _old_cwtv = (
+                        "    def get_tracks(self, title: Movie | Episode) -> Tracks:\n"
+                        "        data = self._request(\n"
+                    )
+                    _new_cwtv = (
+                        "    def get_tracks(self, title: Movie | Episode) -> Tracks:\n"
+                        "        if not title.language:\n"
+                        "            from langcodes import Language\n"
+                        "            title.language = Language.get(\"en\")\n"
+                        "        data = self._request(\n"
+                    )
+                    if _old_cwtv in _cwtv_txt and "if not title.language" not in _cwtv_txt:
+                        _cwtv_bak = _cwtv_init.with_suffix(".py.bak")
+                        if not _cwtv_bak.exists():
+                            _cwtv_bak.write_text(_cwtv_txt, encoding="utf-8")
+                        _cwtv_init.write_text(_cwtv_txt.replace(_old_cwtv, _new_cwtv), encoding="utf-8")
+                        self._log("Patched CWTV/__init__.py: added language guard in get_tracks.")
+                    else:
+                        self._log("CWTV/__init__.py already patched — skipped.")
+            except Exception as _cwe:
+                self._log(f"Note: could not patch CWTV/__init__.py: {_cwe}")
+
             # ── Patch hls.py: guard against zero-length decrypt batch ─────────
             # Google DAI streams have ad breaks with different AES keys.
             # When an ad batch is skipped, the key-change trigger can fire with
@@ -4262,7 +7605,7 @@ class InstallWorker(QThread):
 
 # ── Main Window ───────────────────────────────────────────────────────────────
 
-class TwinVineLauncher(QMainWindow):
+class EnvyLauncher(QMainWindow):
 
     def __init__(self):
         super().__init__()
@@ -4317,13 +7660,12 @@ class TwinVineLauncher(QMainWindow):
             _icon_path = _Path(__file__).parent / "assets" / "icon.ico"
         if _icon_path.exists():
             self.setWindowIcon(QIcon(str(_icon_path)))
-        self.resize(1100, 950)
+        self.resize(1100, 900)
         self._apply_palette()
         self._build_ui()
 
-        # Try to load VineFeeder now if already installed
         if self._is_installed():
-            self._load_vinefeeder()
+            self._populate_service_buttons()
 
     def _apply_palette(self):
         self.setStyleSheet(f"""
@@ -4414,7 +7756,6 @@ class TwinVineLauncher(QMainWindow):
                 ("downloads_folder","My Downloads"),
                 ("extended",        "Extended Services"),
                 ("install",         "Install / Update"),
-                ("hellyes",         "HellYes"),
                 ("log",             "Log"),
                 ("help",            "Help"),
                 ("about",           "About"),
@@ -4509,7 +7850,6 @@ class TwinVineLauncher(QMainWindow):
             "log":      self._build_log_page(),
             "help":     self._build_help_page(),
             "about":    self._build_about_page(),
-            # hellyes is built lazily on first visit (needs venv imports)
         }
         for page in self._pages.values():
             self._stack.addWidget(page)
@@ -4521,11 +7861,6 @@ class TwinVineLauncher(QMainWindow):
         if key == "downloads_folder":
             self._open_downloads_folder()
             return
-        if key == "hellyes":
-            # Build hellyes page on first visit
-            if "hellyes" not in self._pages:
-                self._pages["hellyes"] = self._build_hellyes_page()
-                self._stack.addWidget(self._pages["hellyes"])
         if key not in self._pages:
             return
         self._stack.setCurrentWidget(self._pages[key])
@@ -4548,7 +7883,7 @@ class TwinVineLauncher(QMainWindow):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(24, 20, 24, 20)
 
-        # ── Header row: "Download" title + HellYes + Envied Config right-aligned ──
+        # ── Header row: "Download" title + Envied Config right-aligned ──
         hdr_row = QHBoxLayout()
         hdr = QLabel("Download")
         hdr.setStyleSheet(f"font-size:20px;font-weight:bold;color:{C['green']};")
@@ -4608,17 +7943,27 @@ class TwinVineLauncher(QMainWindow):
             "Enter keyword(s) to search, or paste a direct video URL")
         layout.addWidget(self._search_entry)
 
-        # ── Service buttons ──
+        # ── Service buttons header (label + inline pagination) ──
+        svc_header_row = QHBoxLayout()
+        svc_header_row.setContentsMargins(0, 8, 0, 0)
         svc_lbl = QLabel("Services")
-        svc_lbl.setStyleSheet(f"color:{C['subtext']};margin-top:8px;font-size:10px;")
-        layout.addWidget(svc_lbl)
+        svc_lbl.setStyleSheet(f"color:{C['subtext']};font-size:10px;")
+        svc_header_row.addWidget(svc_lbl)
+        svc_header_row.addStretch()
+        self._svc_nav_widget = QWidget()
+        self._svc_nav_widget.setStyleSheet("background:transparent;")
+        self._svc_nav_layout = QHBoxLayout(self._svc_nav_widget)
+        self._svc_nav_layout.setContentsMargins(0, 0, 0, 0)
+        self._svc_nav_layout.setSpacing(4)
+        svc_header_row.addWidget(self._svc_nav_widget)
+        layout.addLayout(svc_header_row)
 
         self._svc_frame = QFrame()
         self._svc_frame.setStyleSheet(
             f"border:1px solid {C['border']};border-radius:4px;"
             f"background:{C['surface']};")
         self._svc_layout = QVBoxLayout(self._svc_frame)
-        self._svc_layout.setContentsMargins(8, 8, 8, 8)
+        self._svc_layout.setContentsMargins(4, 4, 4, 4)
 
         self._svc_placeholder = QLabel(
             "Service buttons will appear here once EnvyUI is set up.\n"
@@ -5031,7 +8376,7 @@ class TwinVineLauncher(QMainWindow):
         self._dl_progress = QProgressBar()  # kept for signal compat, hidden permanently
         self._dl_progress.setVisible(False)
         self._dl_term = _TermView(C['bg'], C['subtext'], scroll_thumb=C['border'])
-        self._dl_term.setMinimumHeight(500)
+        self._dl_term.setMinimumHeight(410)
         dl_panel_layout.addWidget(self._dl_term, stretch=1)
         self._dl_cancel_btn = QPushButton("\u2715  Cancel Download")
         self._dl_cancel_btn.setStyleSheet(
@@ -5158,8 +8503,24 @@ class TwinVineLauncher(QMainWindow):
                 pass
             _launch_all_powershell(episode_list)
 
-    def _populate_service_buttons(self):
-        """Populate service buttons from CORE_SERVICES list (no vinefeeder needed)."""
+    def _svc_display(self, service_id: str) -> str:
+        """Return the human-readable label for a service ID."""
+        for svc in CORE_SERVICES:
+            if svc["id"] == service_id:
+                return svc["label"]
+        return service_id
+
+    def _populate_service_buttons(self, page: int = 0):
+        """Populate service buttons for the given page (3 rows × 7 per page)."""
+        COLS     = 7
+        ROWS     = 3
+        PER_PAGE = COLS * ROWS   # 21
+
+        services   = list(CORE_SERVICES)
+        total_pages = max(1, -(-len(services) // PER_PAGE))  # ceiling div
+        page        = max(0, min(page, total_pages - 1))
+        self._svc_page = page
+
         def _clear_item(item):
             if item.widget():
                 item.widget().deleteLater()
@@ -5172,25 +8533,59 @@ class TwinVineLauncher(QMainWindow):
             _clear_item(self._svc_layout.takeAt(0))
 
         btn_style = (
-            f"QPushButton{{background:{C['surface']};color:{C['text']};"
-            f"border:1px solid {C['border']};padding:6px 4px;border-radius:4px;"
-            f"font-size:11px;}}"
+            f"QPushButton{{background:{C['surface']};color:{C['green']};"
+            f"border:1px solid {C['green']};border-radius:3px;"
+            f"padding:4px 4px;font-size:11px;}}"
             f"QPushButton:hover{{background:{C['green']};color:{C['bg']};}}"
         )
 
-        row_layout = None
-        all_services = list(CORE_SERVICES)
-        for svc in all_services:
-            if row_layout is None or row_layout.count() >= 5:
-                row_layout = QHBoxLayout()
-                self._svc_layout.addLayout(row_layout)
+        from PyQt6.QtWidgets import QGridLayout
+        grid = QGridLayout()
+        grid.setSpacing(5)
+        grid.setContentsMargins(0, 0, 0, 0)
+        for col in range(COLS):
+            grid.setColumnStretch(col, 1)
+
+        page_svcs = services[page * PER_PAGE : (page + 1) * PER_PAGE]
+        for i, svc in enumerate(page_svcs):
+            row, col = divmod(i, COLS)
             btn = QPushButton(svc["label"])
             btn.setStyleSheet(btn_style)
             btn.clicked.connect(lambda _, s=svc["id"]: self._on_service_clicked(s))
-            row_layout.addWidget(btn)
+            grid.addWidget(btn, row, col)
+        self._svc_layout.addLayout(grid)
 
-        if row_layout and row_layout.count() < 5:
-            row_layout.addStretch()
+        # Clear then repopulate the inline nav widget in the Services header row
+        while self._svc_nav_layout.count():
+            item = self._svc_nav_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if total_pages > 1:
+            nav_btn_style = (
+                f"QPushButton{{background:{C['surface']};color:{C['green']};"
+                f"border:1px solid {C['green']};border-radius:3px;"
+                f"padding:2px 10px;font-size:10px;}}"
+                f"QPushButton:hover{{background:{C['green']};color:{C['bg']};}}"
+                f"QPushButton:disabled{{color:{C['border']};border-color:{C['border']};}}"
+            )
+
+            prev_btn = QPushButton("◀")
+            prev_btn.setStyleSheet(nav_btn_style)
+            prev_btn.setEnabled(page > 0)
+            prev_btn.clicked.connect(lambda: self._populate_service_buttons(self._svc_page - 1))
+
+            page_lbl = QLabel(f"{page + 1} / {total_pages}")
+            page_lbl.setStyleSheet(f"color:{C['subtext']};font-size:10px;padding:0 4px;")
+
+            next_btn = QPushButton("▶")
+            next_btn.setStyleSheet(nav_btn_style)
+            next_btn.setEnabled(page < total_pages - 1)
+            next_btn.clicked.connect(lambda: self._populate_service_buttons(self._svc_page + 1))
+
+            self._svc_nav_layout.addWidget(prev_btn)
+            self._svc_nav_layout.addWidget(page_lbl)
+            self._svc_nav_layout.addWidget(next_btn)
 
         self._dl_status.setText("✅  EnvyUI ready — choose a service to begin")
         self._dl_status.setStyleSheet(
@@ -5526,7 +8921,7 @@ class TwinVineLauncher(QMainWindow):
             self._dl_dir_status.setStyleSheet(f"color:{C['red']};font-size:11px;border:none;")
 
     def _backup_settings(self):
-        """Copy envied.yaml to a timestamped backup next to the original."""
+        """Create a timestamped backup folder on the Desktop with envied.yaml, WVDs, PRDs, and Cookies."""
         import datetime as _dt
         cfg = self._yaml_path()
         if not cfg.exists():
@@ -5535,10 +8930,21 @@ class TwinVineLauncher(QMainWindow):
             return
         try:
             ts = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-            bak = cfg.parent / f"envied.yaml.backup-{ts}"
-            shutil.copy2(cfg, bak)
-            self._last_backup_path = bak
-            self._backup_status.setText(f"Saved: {bak}")
+            desktop = Path.home() / "Desktop"
+            bak_dir = desktop / f"EnvyUI-Backup-{ts}"
+            bak_dir.mkdir(parents=True, exist_ok=True)
+
+            # envied.yaml
+            shutil.copy2(cfg, bak_dir / "envied.yaml")
+
+            # WVDs, PRDs, Cookies — copy entire folder if it exists and has files
+            for folder_name in ("WVDs", "PRDs", "Cookies"):
+                src = self.install_dir / folder_name
+                if src.is_dir() and any(src.iterdir()):
+                    shutil.copytree(src, bak_dir / folder_name, dirs_exist_ok=True)
+
+            self._last_backup_path = bak_dir
+            self._backup_status.setText(f"Saved to Desktop: {bak_dir.name}")
             self._backup_status.setStyleSheet(f"color:{C['green']};font-size:11px;border:none;")
             if hasattr(self, '_backup_open_btn'):
                 self._backup_open_btn.setVisible(True)
@@ -5548,10 +8954,10 @@ class TwinVineLauncher(QMainWindow):
 
     def _open_backup_location(self):
         bak = getattr(self, '_last_backup_path', None)
-        if bak and bak.exists():
-            subprocess.Popen(["explorer", "/select,", str(bak)])
+        if bak and Path(bak).exists():
+            subprocess.Popen(["explorer", str(bak)])
         elif bak:
-            subprocess.Popen(["explorer", str(bak.parent)])
+            subprocess.Popen(["explorer", str(Path(bak).parent)])
 
     def _open_envied_config(self):
         cfg_path = self.install_dir / "packages/envied/src/envied/envied.yaml"
@@ -5655,7 +9061,7 @@ class TwinVineLauncher(QMainWindow):
 
     def _show_category_browser(self, service_name: str):
         """Fetch categories for a service and show them in the selection panel."""
-        self._dl_status.setText(f"⏳ Loading categories for {service_name}…")
+        self._dl_status.setText(f"⏳ Loading categories for {self._svc_display(service_name)}…")
         self._dl_status.setStyleSheet(
             f"color:{C['yellow']};background:{C['surface']};padding:8px;"
             f"border:1px solid {C['border']};border-radius:3px;")
@@ -5682,7 +9088,7 @@ class TwinVineLauncher(QMainWindow):
             f"border:1px solid {C['border']};border-radius:3px;")
 
         panel = self._sel_panel
-        self._sel_title.setText(f"Browse categories — {service_name}")
+        self._sel_title.setText(f"Browse categories — {self._svc_display(service_name)}")
         self._sel_range_widget.setVisible(False)
 
         while self._sel_list_layout.count():
@@ -5753,15 +9159,119 @@ class TwinVineLauncher(QMainWindow):
     def _fetch_category_shows(self, service_name: str,
                                category_id: str, category_name: str):
         """Fetch shows in the selected category and show as search results."""
+        # Two-level navigation: RKTN, CRAV, CBC → genre list
+        if category_id.startswith("cbc-type:"):
+            section = category_id.split(":", 1)[1]  # "shows" or "films"
+            svc_sub = f"CBC:{section}"
+            self._dl_status.setText(f"⏳ Loading {category_name} genres…")
+            self._dl_status.setStyleSheet(
+                f"color:{C['yellow']};background:{C['surface']};padding:8px;"
+                f"border:1px solid {C['border']};border-radius:3px;")
+            worker = CategoryWorker(svc_sub)
+            worker.done.connect(lambda cats: self._show_category_list(service_name, cats))
+            worker.error.connect(lambda msg: (
+                self._append_log(f"[category] {msg}"),
+                self._dl_status.setText(f"Could not load genres: {msg.splitlines()[0]}"),
+                self._dl_status.setStyleSheet(
+                    f"color:{C['red']};background:{C['surface']};padding:8px;"
+                    f"border:1px solid {C['border']};border-radius:3px;"),
+            ))
+            worker.start()
+            self._category_worker = worker
+            return
+
+        if category_id.startswith("crav-type:"):
+            section = category_id.split(":", 1)[1]  # "movies" or "shows"
+            svc_sub = f"CRAV:{section}"
+            self._dl_status.setText(f"⏳ Loading {category_name} genres…")
+            self._dl_status.setStyleSheet(
+                f"color:{C['yellow']};background:{C['surface']};padding:8px;"
+                f"border:1px solid {C['border']};border-radius:3px;")
+            worker = CategoryWorker(svc_sub)
+            worker.done.connect(lambda cats: self._show_category_list(service_name, cats))
+            worker.error.connect(lambda msg: (
+                self._append_log(f"[category] {msg}"),
+                self._dl_status.setText(f"Could not load genres: {msg.splitlines()[0]}"),
+                self._dl_status.setStyleSheet(
+                    f"color:{C['red']};background:{C['surface']};padding:8px;"
+                    f"border:1px solid {C['border']};border-radius:3px;"),
+            ))
+            worker.start()
+            self._category_worker = worker
+            return
+
+        if category_id.startswith("rktn-type:"):
+            content_type = category_id.split(":", 1)[1]  # "movies" or "tv_shows"
+            svc_sub = f"RKTN:{content_type}"
+            self._dl_status.setText(
+                f"⏳ Loading {category_name} genres…")
+            self._dl_status.setStyleSheet(
+                f"color:{C['yellow']};background:{C['surface']};padding:8px;"
+                f"border:1px solid {C['border']};border-radius:3px;")
+            worker = CategoryWorker(svc_sub)
+            worker.done.connect(lambda cats: self._show_category_list(service_name, cats))
+            worker.error.connect(lambda msg: (
+                self._append_log(f"[category] {msg}"),
+                self._dl_status.setText(f"Could not load genres: {msg.splitlines()[0]}"),
+                self._dl_status.setStyleSheet(
+                    f"color:{C['red']};background:{C['surface']};padding:8px;"
+                    f"border:1px solid {C['border']};border-radius:3px;"),
+            ))
+            worker.start()
+            self._category_worker = worker
+            return
+
+        if category_id.startswith("seven-type:"):
+            section = category_id.split(":", 1)[1]  # "shows", "movies", "news", "sport"
+            svc_sub = f"SEVEN:{section}"
+            self._dl_status.setText(f"⏳ Loading {category_name} shelves…")
+            self._dl_status.setStyleSheet(
+                f"color:{C['yellow']};background:{C['surface']};padding:8px;"
+                f"border:1px solid {C['border']};border-radius:3px;")
+            worker = CategoryWorker(svc_sub)
+            worker.done.connect(lambda cats: self._show_category_list(service_name, cats))
+            worker.error.connect(lambda msg: (
+                self._append_log(f"[category] {msg}"),
+                self._dl_status.setText(f"Could not load genres: {msg.splitlines()[0]}"),
+                self._dl_status.setStyleSheet(
+                    f"color:{C['red']};background:{C['surface']};padding:8px;"
+                    f"border:1px solid {C['border']};border-radius:3px;"),
+            ))
+            worker.start()
+            self._category_worker = worker
+            return
+
+        if category_id in ("SBS:tv", "SBS:movies"):
+            self._dl_status.setText(f"⏳ Loading {category_name} genres…")
+            self._dl_status.setStyleSheet(
+                f"color:{C['yellow']};background:{C['surface']};padding:8px;"
+                f"border:1px solid {C['border']};border-radius:3px;")
+            worker = CategoryWorker(category_id)
+            worker.done.connect(lambda cats: self._show_category_list(service_name, cats))
+            worker.error.connect(lambda msg: (
+                self._append_log(f"[category] {msg}"),
+                self._dl_status.setText(f"Could not load genres: {msg.splitlines()[0]}"),
+                self._dl_status.setStyleSheet(
+                    f"color:{C['red']};background:{C['surface']};padding:8px;"
+                    f"border:1px solid {C['border']};border-radius:3px;"),
+            ))
+            worker.start()
+            self._category_worker = worker
+            return
+
         self._dl_status.setText(
-            f"⏳ Loading '{category_name}' shows from {service_name}…")
+            f"⏳ Loading '{category_name}' shows from {self._svc_display(service_name)}…")
         self._dl_status.setStyleSheet(
             f"color:{C['yellow']};background:{C['surface']};padding:8px;"
             f"border:1px solid {C['border']};border-radius:3px;")
 
         worker = CategoryShowsWorker(service_name, category_id, category_name)
         worker.done.connect(
-            lambda shows: self._show_search_results(service_name, shows))
+            lambda shows: self._show_search_results(
+                service_name, shows,
+                total_count=worker.total_count,
+                category_name=category_name,
+            ))
         worker.error.connect(lambda msg: (
             self._append_log(f"[category shows] {msg}"),
             self._dl_status.setText(f"Could not load category: {msg.splitlines()[0]}"),
@@ -5799,15 +9309,24 @@ class TwinVineLauncher(QMainWindow):
             f"border:1px solid {C['border']};border-radius:3px;")
         self._append_log(f"[search error] {msg}")
 
-    def _show_search_results(self, service_name: str, results: list):
+    def _show_search_results(self, service_name: str, results: list,
+                              total_count: int = 0, category_name: str = ""):
         """Populate _sel_panel with search results as radio buttons."""
-        self._dl_status.setText(f"✅ {len(results)} result(s) for {self._svc_display(service_name)} — select a show")
+        svc_label = self._svc_display(service_name)
+        if total_count and total_count > len(results):
+            count_str = f"top {len(results):,} of {total_count:,}"
+            note      = f" — showing top {len(results):,} of {total_count:,} titles"
+        else:
+            count_str = str(len(results))
+            note      = ""
+        self._dl_status.setText(f"✅ {count_str} result(s) for {svc_label} — select a show")
         self._dl_status.setStyleSheet(
             f"color:{C['green']};background:{C['surface']};padding:8px;"
             f"border:1px solid {C['border']};border-radius:3px;")
 
-        panel = self._sel_panel
-        self._sel_title.setText(f"Select a show — {self._svc_display(service_name)}")
+        panel     = self._sel_panel
+        sel_title = (f"{category_name}{note}" if category_name else f"Select a show — {svc_label}")
+        self._sel_title.setText(sel_title)
         self._sel_range_widget.setVisible(False)
 
         while self._sel_list_layout.count():
@@ -5890,12 +9409,54 @@ class TwinVineLauncher(QMainWindow):
             self._start_download(service_name, [url])
             return
 
+        # RKTN movies go through the standard download options panel (same as episodes)
+        if service_name == "RKTN" and "/movies/" in url:
+            self._pending_service = service_name
+            self._opts_show(lambda: self._start_download(service_name, [url]))
+            return
+
+        # ROKU movies go to opts panel — type is encoded as /movie/ in the URL by _roku_search()
+        if service_name == "ROKU" and "/movie/" in url:
+            self._pending_service = service_name
+            self._opts_show(lambda: self._start_download(service_name, [url]))
+            return
+
+        # VM: direct vod/replay URLs (catchup episodes) go straight to options — no series to browse
+        if service_name == "VM" and ("/watch/vod/" in url or "/replay/" in url):
+            self._pending_service = service_name
+            self._opts_show(lambda: self._start_download(service_name, [url]))
+            return
+
+        # CWTV: movie URLs and direct episode URLs (?play=) go straight to options
+        if service_name == "CWTV" and ("/movies/" in url or "?play=" in url):
+            self._pending_service = service_name
+            self._opts_show(lambda: self._start_download(service_name, [url]))
+            return
+
+        # PBS: direct video URLs go straight to options; show URLs → episode browse
+        if service_name == "PBS" and "/video/" in url:
+            self._pending_service = service_name
+            self._opts_show(lambda: self._start_download(service_name, [url]))
+            return
+
+        # CRAV: movie URLs go straight to options; series URLs → episode browse
+        if service_name == "CRAV" and "/movie/" in url:
+            self._pending_service = service_name
+            self._opts_show(lambda: self._start_download(service_name, [url]))
+            return
+
+        # CBS: direct episode URLs go straight to options
+        if service_name == "CBS" and "/shows/video/" in url:
+            self._pending_service = service_name
+            self._opts_show(lambda: self._start_download(service_name, [url]))
+            return
+
         if service_name not in BROWSE_SUPPORTED:
             # Show URL panel so user can download directly
             self._show_url_panel(url)
             return
 
-        self._dl_status.setText(f"⏳ Fetching episodes for '{show.get('title', '')}' from {service_name}…")
+        self._dl_status.setText(f"⏳ Fetching episodes for '{show.get('title', '')}' from {self._svc_display(service_name)}…")
         self._dl_status.setStyleSheet(
             f"color:{C['yellow']};background:{C['surface']};padding:8px;"
             f"border:1px solid {C['border']};border-radius:3px;")
@@ -5934,7 +9495,7 @@ class TwinVineLauncher(QMainWindow):
             f"border:1px solid {C['border']};border-radius:3px;")
 
         panel = self._sel_panel
-        self._sel_title.setText(f"Select series — {service_name}")
+        self._sel_title.setText(f"Select series — {self._svc_display(service_name)}")
         self._sel_range_widget.setVisible(False)
 
         while self._sel_list_layout.count():
@@ -6055,7 +9616,7 @@ class TwinVineLauncher(QMainWindow):
             f"border:1px solid {C['border']};border-radius:3px;")
 
         panel = self._sel_panel
-        self._sel_title.setText(f"Select episodes — {service_name}")
+        self._sel_title.setText(f"Select episodes — {self._svc_display(service_name)}")
         self._sel_range_widget.setVisible(False)
 
         while self._sel_list_layout.count():
@@ -6470,49 +10031,21 @@ class TwinVineLauncher(QMainWindow):
     # ── Install page ─────────────────────────────────────────────────────────
 
     def _build_extended_page(self) -> QWidget:
-        """Extended Services page — direct envied access for services beyond VineFeeder."""
+        """Extended Services page — direct envied access for additional platforms."""
 
         SERVICES = [
             # Tested — known to work
-            ("TUBI",      "Tubi",           0),
-            ("PLUTO",     "Pluto TV",       0),
-            ("RKTN",      "Rakuten TV",     0),
-            ("AUBC",      "ABC iView (AU)", 0),
-            ("SBS",       "SBS (AU)",       0),
-            ("SEVEN",     "7plus (AU)",     0),
-            ("TEN",       "10 (AU)",        0),
-            ("ROKU",      "Roku Channel",   0),
-            ("CBS",       "CBS",            0),
-            ("CBC",       "CBC Gem",        0),
+            ("BLAZ",        "BLAZE TV",     0),
+            ("NFBC",        "NFBC",         0),
+            ("RTDE",        "RTL+",         0),
             ("NPO",       "NPO",            0),
             ("ARD",       "ARD Mediathek",  0),
-            ("CRAVE",     "Crave",          0),
             ("NRK",       "NRK",            0),
-            ("ThreeNow",  "ThreeNow",       0),
-            ("PBS",       "PBS",            0),
-            ("VM",        "VM",             0),
-            # Advanced DRM — not under development currently
-            ("NF",        "Netflix",        2),
-            ("AMZN",      "Amazon Prime",   2),
-            ("DSNP",      "Disney+",        2),
-            ("ATVP",      "Apple TV+",      2),
-            ("MGMP",      "MGM+",           2),
-            ("SPOT",      "Spotify",        2),
-            ("HMAX",      "Max",            2),
-            ("VRT",       "VRT Max",        2),
-            ("MUBI",      "MUBI",           2),
-            ("NBLA",      "Nebula",         2),
-            ("PCOK",      "Peacock",        2),
-            ("DSCP",      "Discovery+",     2),
-            ("CR",        "Crunchyroll",    2),
-            ("SKST",      "SkyShowtime",    2),
         ]
 
-        TIER_COLOURS = {0: C["green"], 1: C["yellow"], 2: C["red"]}
+        TIER_COLOURS = {0: C["green"]}
         TIER_LABELS  = {
-            0: "🟢 Tested — known to work, some may require credentials",
-            1: "🔶 Untested — under development",
-            2: "⚠️  Advanced DRM — not under development currently",
+            0: "🟢 Supported — works with the app; some services require login credentials or cookies",
         }
 
         w = QWidget()
@@ -6546,15 +10079,15 @@ class TwinVineLauncher(QMainWindow):
         legend_row.addStretch()
         outer.addLayout(legend_row)
 
-        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet(f"color:{C['border']};")
-        outer.addWidget(sep)
-
         # ── Service button grid ───────────────────────────────────────────────
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFixedHeight(160)
-        scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
+        svc_frame = QFrame()
+        svc_frame.setObjectName("extSvcFrame")
+        svc_frame.setStyleSheet(
+            f"QFrame#extSvcFrame{{border:1px solid {C['border']};border-radius:4px;"
+            f"background:{C['surface']};}}")
+        svc_frame_layout = QVBoxLayout(svc_frame)
+        svc_frame_layout.setContentsMargins(4, 4, 4, 4)
+
         scroll_w = QWidget()
         scroll_w.setStyleSheet("background:transparent;")
         grid = QGridLayout(scroll_w)
@@ -6583,7 +10116,14 @@ class TwinVineLauncher(QMainWindow):
             grid.addWidget(btn, row, col)
             self._ext_service_btns[tag] = btn
 
-        scroll.setWidget(scroll_w)
+        svc_frame_layout.addWidget(scroll_w)
+
+        scroll = QScrollArea()
+        scroll.setWidget(svc_frame)
+        scroll.setWidgetResizable(True)
+        scroll.setFixedHeight(115)
+        scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}"
+                             "QScrollArea > QWidget > QWidget{border:none;background:transparent;}")
         outer.addWidget(scroll)
 
         sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
@@ -6791,7 +10331,7 @@ class TwinVineLauncher(QMainWindow):
         dl_layout.addWidget(self._ext_term, stretch=1)
 
         dl_btn_row = QHBoxLayout()
-        self._ext_dl_cancel_btn = QPushButton("✕  Cancel")
+        self._ext_dl_cancel_btn = QPushButton("✕  Cancel Download")
         self._ext_dl_cancel_btn.setStyleSheet(sp_cancel.styleSheet())
         dl_btn_row.addWidget(self._ext_dl_cancel_btn)
         dl_btn_row.addStretch()
@@ -7000,7 +10540,7 @@ class TwinVineLauncher(QMainWindow):
             self._ext_dl_cancel_btn.clicked.disconnect()
         except Exception:
             pass
-        self._ext_dl_cancel_btn.setText("✕  Cancel")
+        self._ext_dl_cancel_btn.setText("✕  Cancel Download")
         # Reset quality back to the standard options in case fetch tracks changed it.
         self._ext_quality.clear()
         self._ext_quality.addItems(["Best available", "2160p", "1080p", "720p"])
@@ -7029,7 +10569,7 @@ class TwinVineLauncher(QMainWindow):
             self._ext_dl_cancel_btn.clicked.disconnect()
         except Exception:
             pass
-        self._ext_dl_cancel_btn.setText("✕  Cancel")
+        self._ext_dl_cancel_btn.setText("✕  Cancel Download")
         self._ext_dl_cancel_btn.clicked.connect(self._ext_close_dl_panel)
         self._ext_status.setStyleSheet(
             f"color:{C['yellow']};font-size:11px;")
@@ -7317,7 +10857,7 @@ class TwinVineLauncher(QMainWindow):
             self._ext_dl_cancel_btn.clicked.disconnect()
         except Exception:
             pass
-        self._ext_dl_cancel_btn.setText("✕  Cancel")
+        self._ext_dl_cancel_btn.setText("✕  Cancel Download")
         self._ext_dl_cancel_btn.clicked.connect(_on_cancel)
 
         self._ext_worker.raw_bytes.connect(self._ext_term.write_bytes)
@@ -7388,7 +10928,7 @@ class TwinVineLauncher(QMainWindow):
                 self._ext_dl_cancel_btn.clicked.disconnect()
             except Exception:
                 pass
-            self._ext_dl_cancel_btn.setText("✕  Cancel")
+            self._ext_dl_cancel_btn.setText("✕  Cancel Download")
             def _on_cancel():
                 remaining.clear()
                 if hasattr(self, '_ext_worker'):
@@ -7531,6 +11071,7 @@ class TwinVineLauncher(QMainWindow):
         dl_row.setContentsMargins(0, 0, 0, 6)
         self._dl_dir_entry = QLineEdit()
         self._dl_dir_entry.setPlaceholderText("Default: EnvyCore/Downloads")
+        self._dl_dir_entry.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         dl_row.addWidget(self._dl_dir_entry)
         _small_btn = (f"background:{C['overlay']};color:{C['text']};border:none;"
                       f"padding:6px 14px;border-radius:4px;")
@@ -7557,8 +11098,8 @@ class TwinVineLauncher(QMainWindow):
         backup_lbl.setStyleSheet(f"color:{C['subtext']};font-weight:bold;")
         sf2.addWidget(backup_lbl)
         backup_note = QLabel(
-            "Saves a timestamped copy of your envied.yaml (credentials, CDM settings, "
-            "vault config) next to the original. Restore by renaming the backup file."
+            "Creates a timestamped backup folder on your Desktop containing envied.yaml, "
+            "WVDs, PRDs, and Cookies. Click 'Open Location' after backing up to view the folder."
         )
         backup_note.setWordWrap(True)
         backup_note.setStyleSheet(f"color:{C['subtext']};font-size:11px;")
@@ -7645,21 +11186,15 @@ class TwinVineLauncher(QMainWindow):
         import os as _os
         import threading as _th
 
-        venv_python = self.install_dir / ".venv" / "Scripts" / "python.exe"
-        if not venv_python.exists():
-            QMessageBox.warning(self, APP_NAME,
-                "EnvyCore venv not found. Please run Install EnvyUI Tools first.")
-            return
-
+        # PyInstaller must run from the same Python that has PyQt6 — that is
+        # the system Python running this script, NOT the EnvyCore venv Python.
+        system_python = _sys.executable
         if getattr(_sys, "frozen", False):
-            # Running as a built exe — the source .py to rebuild from must
-            # be the one sitting next to this exe, not sys.argv[0] (which
-            # points at the exe itself and would tell PyInstaller to
-            # "build" the exe as if it were a Python script).
-            launcher_py = Path(_sys.executable).parent / "twinvine_launcher.py"
+            # If already running as a built exe, there is no .py to rebuild from.
+            launcher_py = Path(_sys.executable).parent / "envy_launcher.py"
             if not launcher_py.exists():
                 QMessageBox.warning(self, APP_NAME,
-                    f"Could not find twinvine_launcher.py next to the exe:\n{launcher_py}\n\n"
+                    f"Could not find envy_launcher.py next to the exe:\n{launcher_py}\n\n"
                     "Place the source .py file in the same folder as the exe to rebuild.")
                 return
         else:
@@ -7677,14 +11212,9 @@ class TwinVineLauncher(QMainWindow):
             try:
                 cf = dict(creationflags=_sp.CREATE_NO_WINDOW)
 
-                # Step 1 — install PyInstaller via uv (venv has no pip by default)
-                uv_exe = self.cfg.get("uv_exe") or shutil.which("uv")
-                if not uv_exe:
-                    # fallback — look in the standard uv install location
-                    uv_exe = str(Path.home() / ".local" / "bin" / "uv.exe")
+                # Step 1 — install PyInstaller into the system Python (which has PyQt6)
                 r = _sp.run(
-                    [uv_exe, "pip", "install", "--quiet", "pyinstaller",
-                     "--python", str(venv_python)],
+                    [system_python, "-m", "pip", "install", "--quiet", "pyinstaller"],
                     capture_output=True, text=True, cwd=str(launcher_dir), **cf)
                 if r.returncode != 0:
                     raise RuntimeError(f"PyInstaller install failed:\n{r.stderr}")
@@ -7694,7 +11224,7 @@ class TwinVineLauncher(QMainWindow):
 
                 # Step 2 — build args (no spec file needed)
                 build_args = [
-                    str(venv_python), "-m", "PyInstaller",
+                    system_python, "-m", "PyInstaller",
                     "--noconfirm",
                     "--onefile",
                     "--windowed",
@@ -7919,10 +11449,7 @@ class TwinVineLauncher(QMainWindow):
                 self._settings_frame.setVisible(True)
                 self._load_dl_dir_from_yaml()
 
-            # Load VineFeeder directly — no relaunch needed.
-            # The sys.path eviction in bootstrap_vinefeeder handles version
-            # differences between the launcher Python and the venv Python.
-            self._load_vinefeeder()
+            self._populate_service_buttons()
             self._append_log("=" * 60)
             self._append_log("INSTALLATION COMPLETE — service buttons are available.")
             self._append_log("=" * 60)
@@ -7938,9 +11465,6 @@ class TwinVineLauncher(QMainWindow):
             QMessageBox.critical(self, APP_NAME, f"Installation failed:\n{msg}")
 
     def _check_updates(self):
-        if not REQUESTS_AVAILABLE:
-            QMessageBox.warning(self, APP_NAME, "pip install requests to enable update checks.")
-            return
         self._update_btn.setEnabled(False)
         self._update_btn.setText("Checking…")
         # Use a QThread (not threading.Thread) so QTimer.singleShot works correctly
@@ -7960,70 +11484,19 @@ class TwinVineLauncher(QMainWindow):
             QMessageBox.information(self, APP_NAME, "✓ EnvyUI is up to date!")
         else:
             ans = QMessageBox.question(self, APP_NAME,
-                "A new version of EnvyUI is available.\n\n"
-                "Download and install the update now?",
+                f"EnvyUI v{remote} is available (you have v{local}).\n\n"
+                "To update:\n"
+                "1. Click 'Back Up Settings' on the Install page (just to be safe)\n"
+                "2. Close the app\n"
+                "3. Download the new zip and extract it over your existing EnvyUI folder\n"
+                "   — your envied.yaml, cookies, and CDM files are NOT in the zip so they\n"
+                "   will not be overwritten\n"
+                "4. Reopen the app and click 'Install EnvyUI Tools' to update the environment\n\n"
+                "Open the GitHub releases page now?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
             if ans == QMessageBox.StandardButton.Yes:
-                self._download_launcher_update(remote)
-
-    def _download_launcher_update(self, new_version: str):
-        """Download the latest launcher .py from GitHub and replace this file."""
-        import urllib.request as _urlreq
-        import sys as _sys
-        import os as _os
-
-        if getattr(_sys, "frozen", False):
-            QMessageBox.information(self, APP_NAME,
-                "Auto-update isn't supported when running the compiled .exe.\n\n"
-                "Please run the launcher via run_launcher.bat (the .py version) "
-                "to use auto-update, or download the latest release manually from:\n"
-                f"https://github.com/{GITHUB_REPO}")
-            return
-
-        # Raw URL to the launcher file on the main branch
-        raw_url = (
-            f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/"
-            "twinvine_launcher.py"
-        )
-        current_file = _os.path.abspath(_sys.argv[0])
-        backup_file  = current_file + ".bak"
-
-        self._update_btn.setEnabled(False)
-        self._update_btn.setText("Downloading…")
-        QApplication.processEvents()
-
-        try:
-            with _urlreq.urlopen(raw_url, timeout=30) as resp:
-                new_content = resp.read()
-
-            # Back up current file before overwriting
-            with open(current_file, "rb") as f:
-                old_content = f.read()
-            with open(backup_file, "wb") as f:
-                f.write(old_content)
-
-            # Write new launcher file
-            with open(current_file, "wb") as f:
-                f.write(new_content)
-
-            # Save new commit SHA so next check knows we're up to date
-            # New file's APP_VERSION will be picked up on next launch.
-
-            QMessageBox.information(self, APP_NAME,
-                "✓ Update downloaded successfully.\n\n"
-                "Please close and reopen the launcher for the changes to take effect.\n\n"
-                "If you are running the launcher as a compiled .exe, you will need to "
-                "rebuild it via the About page after restarting for the update to take effect.\n\n"
-                f"A backup of the previous version has been saved as:\n{backup_file}")
-
-        except Exception as e:
-            QMessageBox.warning(self, APP_NAME,
-                f"Update download failed:\n{e}\n\n"
-                "You can download the latest version manually from:\n"
-                f"{LAUNCHER_URL}")
-        finally:
-            self._update_btn.setEnabled(True)
-            self._update_btn.setText("🔄  Check for Updates")
+                import webbrowser as _wb
+                _wb.open(f"https://github.com/{GITHUB_REPO}/releases")
 
     # ── Log page ─────────────────────────────────────────────────────────────
 
@@ -8087,64 +11560,60 @@ class TwinVineLauncher(QMainWindow):
         HELP_TEXT = """
 ## Before You Install
 
-When you click **Install EnvyUI Tools** the following will happen:
+**When you run EnvyUI.bat for the first time** the following packages are installed automatically into your system Python before the app opens:
 
-- Media tools are downloaded and installed: **FFmpeg** (~240MB), **MKVToolNix**, **Bento4**, **N_m3u8DL-RE** and others
-- The **uv** Python package manager is installed
-- A **Python virtual environment** is created and all required packages installed (~150MB)
-- **envied.yaml** is patched where needed — backups are kept as .bak files
+- **PyQt6** — the UI framework EnvyUI is built on
+- **PyQt6-WebEngine** — powers the in-app terminal panel
+- **pywinpty** — enables real-time terminal output during downloads
+- **certifi** — SSL certificate bundle for secure connections
+- **uv** — the Python package manager used to build the EnvyCore environment
 
-**Total download:** approximately 500MB. **Time:** 2–5 minutes on a fast connection.
+These are installed into your system Python via pip and only happen if each package is not already present. You will see a brief console message for each one being installed.
 
-**Some items are installed outside the EnvyCore folder:**
+**After the app opens**, click **Install EnvyUI Tools** on the Install / Update page to complete the setup:
 
-- **uv** is installed to your user profile (`~/.local/bin`)
-- **FFmpeg, MKVToolNix, N_m3u8DL-RE, Bento4, Shaka Packager** are installed to `C:\\Tools\\bin`
-- **Git for Windows** is installed system-wide if not already present
+- A **Python virtual environment** is created inside EnvyCore and all required packages are installed (~150MB)
+- The following tools are downloaded and installed to `C:\\Tools\\bin`: **FFmpeg** (~240MB), **N_m3u8DL-RE**, **Shaka Packager**, **mp4decrypt** (Bento4), **dovi_tool**, **hdr10plus_tool**, **CCExtractor**
+- **MKVToolNix** is installed via winget and its executables are copied to `C:\\Tools\\bin`
+- **SubtitleEdit** is installed to `C:\\Tools\\SubtitleEdit`
+- **Git for Windows** is installed system-wide via winget if not already present
+- Configuration files are patched where needed — backups of any modified files are kept alongside the originals
 
-If you delete the EnvyCore folder and reinstall, tools already in `C:\\Tools\\bin` will be detected and skipped — only the EnvyCore packages themselves will be re-downloaded. To fully uninstall everything, you would also need to delete `C:\\Tools\\bin` and remove uv and Git manually.
+**Total download for Install EnvyUI Tools:** approximately 500MB. **Time:** 2–5 minutes on a fast connection.
+
+If you delete the EnvyCore folder and reinstall, tools already in `C:\\Tools\\bin` are detected and skipped — only the EnvyCore Python environment will be rebuilt. To fully uninstall everything you would also need to delete `C:\\Tools\\bin`, `C:\\Tools\\SubtitleEdit`, and remove uv and Git manually.
 
 ---
 
 ## Getting Started
 
-1. On first run, click **Install / Update** in the sidebar and then **Install EnvyUI Tools**. You can check the **Log** tab for a more detailed view of the installation.
-2. Once installed, return to **Home** and search for your desired title, or paste a URL directly into the search box, then click a service button (BBC, ITVX, etc.).
-3. You can also click a service button first and then choose how to search — by keyword, URL, or browse by category.
-4. Select the series and episodes you want, then click **Confirm**.
-5. Before downloading you can set a few options:
-5a. **Quality** — Best available will always try to grab the highest quality stream. If you know a 2160p version exists, select that specifically as Best available may not always find it.
-5b. **Slow mode** — Adds a randomised delay between episode downloads. Useful for reducing the risk of being throttled. The min and max delay in seconds can be set once the box is ticked.
+1. On first run, click **Install / Update** in the sidebar and then **Install EnvyUI Tools**. Check the **Log** tab for a detailed view of what is being installed.
+2. Once installed, return to **Home** and click a service button (BBC, ITVX, etc.), then search by keyword or paste a URL.
+3. Select the series and episodes you want, then click **Confirm**.
+4. Before downloading you can set a few options — see **Options** below for details.
 
 ---
 
 ## Navigation
 
 - **Home** — The main page. Click a service button to start, type keywords to search, or paste a direct episode URL into the search box.
+- **Extended Services** — Additional streaming platforms accessed by URL, with a Browse Series episode picker.
 - **My Downloads** — Opens your downloads folder in Windows Explorer.
-- **Install / Update** — Install or update EnvyUI and all media tools.
-- **HellYes** — Advanced manual DRM key extraction tool.
+- **Install / Update** — Install or update EnvyUI and all media tools. After the first install this page also provides: Back Up Settings, Build EXE, and Change Download Location.
 - **Log** — Detailed output from the launcher, useful for diagnosing issues.
 - **Help** — You are here.
-- **About** — Information about TwinVine and its authors.
+- **About** — Information about EnvyUI, TwinVine, and their authors.
 
 ---
 
 ## Options
 
 - **Envied Config** — Opens envied.yaml in Notepad. Edit credentials, download location, filename format, subtitle settings and more.
-- **HLG** — Enables HDR/HLG streams when ticked (on by default). Untick HLG if you see a "Selection unavailable in UHD" or "Stream not available in that resolution" error.
-- **Quality** — Choose from Best available, 2160p, 1080p, or 720p. For resolutions lower than 720p use the Fetch Tracks option in the URL Download panel. Note that Best available will normally fall back to the best resolution available if your chosen resolution is not found.
+- **HLG** — Enables HDR/HLG streams when ticked (on by default). If a download fails with "Selection unavailable in UHD" or "Stream not available in that resolution", the app will automatically retry in SDR. If the retry also fails, untick HLG and try again manually.
+- **Quality** — Choose from Best available, 2160p, 1080p, or 720p. Best available will fall back to the highest resolution found if your chosen resolution is not available. For resolutions lower than 720p use Fetch Tracks in the URL Download panel.
 - **No subtitles** — Skip subtitle downloads for all selected episodes.
 - **Slow mode** — Adds a randomised delay between episode downloads. Set your preferred minimum and maximum wait time in seconds once the box is ticked.
 - **Fetch Tracks** — Available in the Download by URL panel. Paste an episode or series URL, click **Fetch Tracks**, and a dropdown list of all available resolutions will appear. Select your preferred resolution and click Download. Note that 2160p may not always appear in the list — if so, try Best available or use the standard Quality options instead.
-
----
-
-## Updating the App
-
-- **Checking and downloading App updates** — When you check for an update and are using the EXE file to start the app you will need to start the app using the batch file after the update and rebuild the exe file to use from then on, you won't have to remove any shortcuts already made.
-- **Not using the built in update checker** — All you need to do here is download the latest twinvine_launcher.py file from GitHub and replace your current file and run from the batch file first time and again rebuild the EXE file if you're using that.
 
 ---
 
@@ -8163,6 +11632,18 @@ After searching, select the series you want, tick the episodes and click **Confi
 
 ---
 
+## Extended Services
+
+The **Extended Services** page supports additional platforms not shown on the main Home page: NRK, ThreeNow, PBS, VM (Virgin Media Television), Rakuten and more.
+
+**Downloading by URL** — Paste a direct episode or series URL into the URL field and click **Download**. For series pages where you want to pick specific episodes, use the **Browse Series** button instead.
+
+**Selecting specific episodes without Browse Series** — If you have a series URL but cannot easily get individual episode URLs from the website, you can append an episode identifier to the URL field with a space followed by `-w` and the episode code, for example: `-w s01e01` or `-w s01e01-s01e03` for a range.
+
+**Fetch Tracks** — Click this before downloading to see all available resolutions for the URL you have entered. Select your preferred resolution from the dropdown that appears, then click Download.
+
+---
+
 ## Batch Mode
 
 Batch mode lets you queue episodes from multiple shows before downloading them all at once.
@@ -8170,40 +11651,73 @@ Batch mode lets you queue episodes from multiple shows before downloading them a
 1. Toggle **Batch Mode** on in the sidebar — Batch Mode text turns green when active.
 2. Search and select episodes as normal — they queue instead of downloading immediately. The sidebar shows how many episodes are queued.
 3. When ready, click **Run Batch** to download everything in the queue.
-4. Toggle **Batch Mode** should return to normal once complete so you can continue single service downloads.
+4. If you need to start your batch list over, click the **Clear** button to empty the queue.
+5. Batch Mode will return to normal automatically once the batch completes.
 
 ---
 
-## Common Errors
+## Build EXE
 
-**"Selection unavailable in UHD"** or **"Stream not available in that resolution"** — The app will automatically retry to download in SDR should that fail again untick the HLG checkbox and try again.
+The **Build EXE** button on the Install / Update page packages EnvyUI into a standalone `.exe` file using PyInstaller. Once built you can create a desktop shortcut to the exe and launch EnvyUI without needing the batch file.
 
-**"No .venv found"** — Go to Install / Update and click Install EnvyUI Tools.
-
-**"patch failed / cannot import vinefeeder"** — Usually a Python version mismatch. Delete the EnvyCore subfolder and click Install EnvyUI Tools again.
-
-**"Download fails with exit code 1"** — Check your credentials in Envied Config and make sure your CDM device file is in the WVDs folder.
-
-**"unable to find vault command"** — Run Install / Update again to repair the configuration.
+- The exe is saved to the same folder as `envy_launcher.py`
+- Building takes a minute or two — the Log tab shows progress
+- After updating EnvyUI to a new version, click Build EXE again to rebuild the exe. Any existing shortcuts will continue to point to the same file location and will not need to be updated.
+- The exe still requires your system Python and the EnvyCore environment — it is a launcher shortcut, not a fully self-contained package
 
 ---
 
 ## Supported Services
 
-- **Please note: Some services require login credentials** - To add these you'll need to edit the envied config file a link can be found on the home page.
+**Please note: Some services require login credentials and/or cookie files.** To add credentials, click **Envied Config** on the Home page and fill in the relevant section for each service. To add cookies, place your cookie text file in the **Cookies** folder inside EnvyCore — the file should be named after the service, for example: `PBS.txt`.
 
-ALL4, BBC iPlayer, ITVX, MY5, PLEX, RTE, STV, TPTV, TVNZ (untested), U
+**⚠ While some services on the app may have paid for or subscription plans we can only offer support or bug reports for Free-to-air content only as we are unable to test anything other than services that offer Free-to-air content and while envied lists over 60 services we only list services that we have been able to test and are known to work with the app, you can of course still use envied from a terminal window inside the EnvyCore folder if you're familiar with envied commands structure. All services listed below are free to watch without a subscription (though some require a free account for login).**
+
+**Main page services:** ALL4, BBC iPlayer, ITVX, My5, U (UKTV), RTE, STV, TPTV, Rakuten TV, Tubi, Pluto TV, VM Play (IE), TVNZ, ThreeNow (NZ), ABC iView (AU), 7plus (AU), 9Now (AU), 10play (AU), SBS On Demand (AU), Roku (US), CBS (US), NBC, PBS, The CW (US), Crave, CBC Gem, Plex
+
+**Extended Services page:** **Extended Services page:** Blaze TV, NFBC, RTE+, NPO, ARD Mediathek, NRK
+
+**Reordering or hiding main page buttons** — The order of the main page service buttons can be customised by editing the `CORE_SERVICES` list near the top of `envy_launcher.py`. Each entry is a short line like `{"id": "ALL4", "label": "ALL4"}` — simply cut and paste lines into whichever order you prefer and restart the app. If more than 14 services are on the main page, buttons are spread across pages navigated with the Prev / Next controls that appear in the Services header. To hide a service you don't use, add a `#` at the start of its line to comment it out — it will no longer appear on the main page but can be restored at any time by removing the `#`.
+
+---
+
+## Common Errors
+
+**"Selection unavailable in UHD"** or **"Stream not available in that resolution"** — The app will automatically retry in SDR. If that also fails, untick the HLG checkbox and try again.
+
+**"No .venv found"** — Go to Install / Update and click Install EnvyUI Tools.
+
+**"Download fails with exit code 1"** — Check your credentials in Envied Config and make sure your CDM device file is in the WVDs folder.
+
+**"unable to find vault command"** — Run Install / Update again to repair the configuration.
+
+**NVIDIA GeForce overlay popup on launch** — The terminal panel inside EnvyUI uses a GPU-accelerated Chromium surface which NVIDIA GeForce Experience detects as a game. To fix this, open GeForce Experience, go to Settings → In-Game Overlay → click the gear icon → find EnvyUI in the application list and exclude it.
 
 ---
 
 ## Tips
 
-- Downloads are saved to the **EnvyCore/Downloads** folder by default.
-- Change the download location in **Envied Config** under the directories section.
+- Downloads are saved to the **EnvyCore/Downloads** folder by default. You can change this on the Install / Update page under Change Download Location.
 - The **Log** tab records everything — check it first if something goes wrong.
-- Login credentials for each service go in **Envied Config** under credentials.
+- Login credentials for each service go in **Envied Config** under the credentials section.
+- Cookie files go in the **Cookies** folder inside EnvyCore, named after the service (e.g. `PBS.txt`).
+- Use **Back Up Settings** on the Install / Update page before updating or reinstalling — it saves your envied.yaml, WVDs, PRDs, and Cookies to a timestamped folder on your Desktop.
+- Some services are region-locked and may require a VPN depending on your location. If a download fails with an access or geo-restriction error, try connecting via a VPN for that service's country.
 - If a fresh install fails, delete the EnvyCore subfolder and try again.
-- Keep a backup copy of your **envied.yaml** somewhere safe — if you delete it you will need to re-enter all your credentials and settings from scratch.
+
+---
+
+## Updating the App
+
+EnvyUI updates are distributed as zip files on the GitHub releases page. When a new version is available the built-in update checker will open the releases page in your browser so you can download the latest zip.
+
+**To update:**
+
+1. Click **Back Up Settings** on the Install / Update page — this creates a timestamped folder on your Desktop containing your envied.yaml, WVDs, PRDs, and Cookies.
+2. Close the app.
+3. Download the new zip from the GitHub releases page and extract it over your existing EnvyUI folder. Your envied.yaml, cookies, and CDM files are not included in the zip so they will not be overwritten.
+4. Reopen the app and click **Install EnvyUI Tools** to update the Python environment.
+5. If you were using a shortcut to an EXE file, click **Build EXE** on the Install / Update page to rebuild it — existing shortcuts will continue to work without being removed.
 
         """
         # ─────────────────────────────────────────────────────────────────────
@@ -8254,263 +11768,6 @@ ALL4, BBC iPlayer, ITVX, MY5, PLEX, RTE, STV, TPTV, TVNZ (untested), U
 
 
 
-    def _build_hellyes_page(self) -> QWidget:
-        """HellYes — embedded DRM key fetcher. Mirrors gui.py (AllHell3App)."""
-        from PyQt6.QtWidgets import QTextEdit
-        page = QWidget()
-        outer = QVBoxLayout(page)
-        outer.setContentsMargins(24, 16, 24, 16)
-        outer.setSpacing(6)
-
-        hdr = QLabel("HellYes")
-        hdr.setStyleSheet(f"font-size:20px;font-weight:bold;color:{C['green']};")
-        outer.addWidget(hdr)
-        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
-        outer.addWidget(sep)
-
-        # MPD URL
-        outer.addWidget(self._hy_lbl("MPD URL"))
-        self._hy_mpd = QLineEdit()
-        self._hy_mpd.setStyleSheet(f"border:1px solid {C['border']};background:{C['surface']};color:{C['text']};padding:4px;")
-        self._hy_mpd.setPlaceholderText("https://example.com/manifest.mpd")
-        outer.addWidget(self._hy_mpd)
-
-        # cURL
-        outer.addWidget(self._hy_lbl("cURL of License Request"))
-        self._hy_curl = QTextEdit()
-        self._hy_curl.setMaximumHeight(80)
-        self._hy_curl.setStyleSheet(f"border:1px solid {C['border']};background:{C['surface']};color:{C['text']};")
-        self._hy_curl.setPlaceholderText("Paste the curl command from browser DevTools here...")
-        outer.addWidget(self._hy_curl)
-
-        # Red-bordered frame: video name + buttons
-        frame = QFrame()
-        frame.setStyleSheet(f"border:1px solid {C['border']};border-radius:4px;padding:4px;")
-        fl = QVBoxLayout(frame)
-        fl.setSpacing(6)
-        fl.setContentsMargins(8, 8, 8, 8)
-
-        fl.addWidget(self._hy_lbl("Video Name"))
-        self._hy_name = QLineEdit()
-        self._hy_name.setStyleSheet(f"border:1px solid {C['border']};background:{C['surface']};color:{C['text']};padding:4px;")
-        fl.addWidget(self._hy_name)
-
-        btn_style = (f"color:{C['text']};background:#4e4e4e;"
-                     f"border:1px solid #6e6e6e;padding:5px 12px;")
-        btn_row = QHBoxLayout()
-        self._hy_btn_keys = QPushButton("Get Keys")
-        self._hy_btn_keys.setStyleSheet(btn_style)
-        self._hy_btn_keys.clicked.connect(self._hy_fetch_keys)
-        btn_row.addWidget(self._hy_btn_keys)
-
-        self._hy_btn_nm = QPushButton("Download Nm~RE")
-        self._hy_btn_nm.setStyleSheet(btn_style)
-        self._hy_btn_nm.clicked.connect(self._hy_download_nm)
-        btn_row.addWidget(self._hy_btn_nm)
-
-        self._hy_btn_dash = QPushButton("Download DASH")
-        self._hy_btn_dash.setStyleSheet(btn_style)
-        self._hy_btn_dash.clicked.connect(self._hy_download_dash)
-        btn_row.addWidget(self._hy_btn_dash)
-        fl.addLayout(btn_row)
-        outer.addWidget(frame)
-
-        # Keys output
-        outer.addWidget(self._hy_lbl("Keys"))
-        self._hy_keys_out = QTextEdit()
-        self._hy_keys_out.setReadOnly(True)
-        self._hy_keys_out.setMaximumHeight(60)
-        self._hy_keys_out.setStyleSheet(f"background:{C['bg']};color:{C['green']};border:1px solid {C['border']};")
-        outer.addWidget(self._hy_keys_out)
-
-        # N_m3u8DL-RE command
-        outer.addWidget(self._hy_lbl("N_m3u8DL-RE command"))
-        self._hy_nm_out = QTextEdit()
-        self._hy_nm_out.setMaximumHeight(50)
-        self._hy_nm_out.setStyleSheet(f"background:{C['surface']};color:{C['text']};border:1px solid {C['border']};")
-        outer.addWidget(self._hy_nm_out)
-
-        # Dash-MPD-CLI command
-        outer.addWidget(self._hy_lbl("Dash-MPD-CLI command"))
-        self._hy_dash_out = QTextEdit()
-        self._hy_dash_out.setMaximumHeight(50)
-        self._hy_dash_out.setStyleSheet(f"background:{C['surface']};color:{C['text']};border:1px solid {C['border']};")
-        outer.addWidget(self._hy_dash_out)
-
-        # Reset button
-        reset_row = QHBoxLayout()
-        reset_btn = QPushButton("Reset")
-        reset_btn.setStyleSheet(f"background:{C['overlay']};color:{C['text']};border:none;padding:5px 16px;border-radius:3px;")
-        reset_btn.clicked.connect(self._hy_reset)
-        reset_row.addWidget(reset_btn)
-        reset_row.addStretch()
-        outer.addLayout(reset_row)
-        outer.addStretch()
-
-        self._hy_nm_command   = ""
-        self._hy_dash_command = ""
-        return page
-
-    def _hy_lbl(self, text: str) -> QLabel:
-        lbl = QLabel(text)
-        lbl.setStyleSheet(f"color:{C['subtext']};font-size:11px;border:none;margin-top:2px;")
-        return lbl
-
-    def _hy_reset(self):
-        self._hy_mpd.clear()
-        self._hy_curl.clear()
-        self._hy_name.clear()
-        self._hy_keys_out.clear()
-        self._hy_nm_out.clear()
-        self._hy_dash_out.clear()
-        self._hy_nm_command   = ""
-        self._hy_dash_command = ""
-
-    def _hy_fetch_keys(self):
-        """Fetch DRM keys — mirrors AllHell3App.fetch_keys() from gui.py."""
-        import httpx as _httpx
-        import re as _re
-        import base64 as _b64
-        import codecs as _codecs
-        import urllib.parse as _ulp
-        import xml.etree.ElementTree as _ET
-
-        mpd_url  = self._hy_mpd.text().strip()
-        curl_cmd = self._hy_curl.toPlainText().strip()
-        vid_name = self._hy_name.text().strip()
-
-        if not mpd_url or not curl_cmd:
-            QMessageBox.warning(self, "HellYes", "Please enter both MPD URL and cURL command.")
-            return
-
-        try:
-            # ── Fetch MPD ──────────────────────────────────────────────────────
-            mpd_content = _httpx.get(mpd_url).text
-
-            # ── Extract/generate PSSH (mirrors extract_or_generate_pssh) ──────
-            WIDEVINE_SID = "EDEF8BA9-79D6-4ACE-A3C8-27DCD51D21ED"
-            ns = {"cenc": "urn:mpeg:cenc:2013", "": "urn:mpeg:dash:schema:mpd:2011"}
-            try:
-                root = _ET.fromstring(mpd_content)
-                default_kid = None
-                pssh = None
-                for elem in root.findall(".//ContentProtection", ns):
-                    sid = elem.attrib.get("schemeIdUri", "").upper()
-                    if sid == "URN:MPEG:DASH:MP4PROTECTION:2011":
-                        default_kid = elem.attrib.get("cenc:default_KID")
-                    if sid == f"URN:UUID:{WIDEVINE_SID}":
-                        pe = elem.find("cenc:pssh", ns)
-                        if pe is not None:
-                            pssh = pe.text
-                if not default_kid:
-                    m = _re.search(r'cenc:default_KID="([A-F0-9-]+)"', mpd_content)
-                    if m:
-                        default_kid = m.group(1)
-                if not pssh and default_kid:
-                    kid = default_kid.replace("-", "")
-                    s = f"000000387073736800000000edef8ba979d64acea3c827dcd51d21ed000000181210{kid}48e3dc959b06"
-                    pssh = _b64.b64encode(bytes.fromhex(s)).decode()
-            except _ET.ParseError:
-                pssh = None
-
-            if not pssh:
-                QMessageBox.critical(self, "HellYes", "Could not extract PSSH from MPD.\nIs this a Widevine-encrypted stream?")
-                return
-
-            # ── Parse cURL (mirrors parse_curl) ───────────────────────────────
-            url_m = _re.search(r"curl\s+'(.*?)'", curl_cmd)
-            lic_url = url_m.group(1) if url_m else ""
-            headers = {}
-            for h in _re.findall(r"-H\s+'([^:]+):\s*(.*?)'", curl_cmd):
-                headers[h[0]] = h[1]
-            data_m = _re.search(r"--data(?:-raw)?\s+(?:(\$?')|(\$?{?))(.*?)'", curl_cmd, __re.DOTALL)
-            if data_m:
-                raw_prefix = data_m.group(1)
-                data = data_m.group(3)
-                if raw_prefix and raw_prefix.startswith("$"):
-                    data = None
-                else:
-                    data = data.replace("\\\\", "\\").replace("\\x", "\\\\x")
-                    try:
-                        data = _codecs.decode(data, "unicode_escape")
-                    except Exception:
-                        data = ""
-            else:
-                data = ""
-
-            # ── Get keys (mirrors get_key) ────────────────────────────────────
-            from pywidevine.cdm import Cdm
-            from pywidevine.device import Device
-            from pywidevine.pssh import PSSH as WV_PSSH
-
-            wvd = self.install_dir / "WVDs" / "device.wvd"
-            if not wvd.exists():
-                QMessageBox.critical(self, "HellYes", f"WVD not found at:\n{wvd}")
-                return
-
-            device = Device.load(str(wvd))
-            cdm = Cdm.from_device(device)
-            sid = cdm.open()
-            challenge = cdm.get_license_challenge(sid, WV_PSSH(pssh))
-
-            # Handle data substitution exactly as gui.py does
-            payload = challenge
-            if data:
-                if m := _re.search(r'"(CAQ=.*?)"', data):
-                    payload = data.replace(m.group(1), _b64.b64encode(challenge).decode())
-                elif m := _re.search(r'"(CAES.*?)"', data):
-                    payload = data.replace(m.group(1), _b64.b64encode(challenge).decode())
-                elif m := _re.search(r'=(CAES.*?)(&.*)?$', data):
-                    payload = data.replace(m.group(1), _ulp.quote_plus(_b64.b64encode(challenge).decode()))
-
-            lic_resp = _httpx.post(lic_url, data=payload, headers=headers)
-            lic_resp.raise_for_status()
-            lic_content = lic_resp.content
-            try:
-                m = _re.search(r'"(CAIS.*?)"', lic_resp.content.decode("utf-8"))
-                if m:
-                    lic_content = _b64.b64decode(m.group(1))
-            except Exception:
-                pass
-            if isinstance(lic_content, str):
-                lic_content = _b64.b64decode(lic_content)
-
-            cdm.parse_license(sid, lic_content)
-            keys = [f"--key {k.kid.hex}:{k.key.hex()}"
-                    for k in cdm.get_keys(sid) if k.type == "CONTENT"]
-            cdm.close(sid)
-
-            key_str = " ".join(keys)
-            self._hy_keys_out.setText("\n".join(keys))
-            self._hy_nm_command   = (f"N_m3u8DL-RE '{mpd_url}' {key_str}"
-                                      f" --save-name {vid_name} -mt -M:format=mkv:muxer=mkvmerge")
-            self._hy_dash_command = (f'dash-mpd-cli --quality best --muxer-preference mkv:mkvmerge'
-                                      f' {key_str} "{mpd_url}" --write-subs --output \'{vid_name}.mkv\'')
-            self._hy_nm_out.setText(self._hy_nm_command)
-            self._hy_dash_out.setText(self._hy_dash_command)
-
-        except Exception as e:
-            import traceback
-            QMessageBox.critical(self, "HellYes Error", f"{e}\n\n{traceback.format_exc()[:500]}")
-
-    def _hy_download_nm(self):
-        if not self._hy_nm_command:
-            QMessageBox.warning(self, "HellYes", "Get keys first.")
-            return
-        import shlex as _sl
-        subprocess.Popen(_sl.split(self._hy_nm_command),
-                         cwd=str(self.install_dir),
-                         creationflags=subprocess.CREATE_NEW_CONSOLE)
-
-    def _hy_download_dash(self):
-        if not self._hy_dash_command:
-            QMessageBox.warning(self, "HellYes", "Get keys first.")
-            return
-        import shlex as _sl
-        subprocess.Popen(_sl.split(self._hy_dash_command),
-                         cwd=str(self.install_dir),
-                         creationflags=subprocess.CREATE_NEW_CONSOLE)
-
     def _build_about_page(self) -> QWidget:
         page = QWidget()
         scroll = QScrollArea()
@@ -8521,7 +11778,61 @@ ALL4, BBC iPlayer, ITVX, MY5, PLEX, RTE, STV, TPTV, TVNZ (untested), U
         layout.setContentsMargins(24, 20, 24, 20)
         layout.setSpacing(0)
 
-        # ── Section 1: TwinVine original project ─────────────────────────────
+        # ── Section 1: EnvyUI ─────────────────────────────────────────────────
+        lnch_title = QLabel("EnvyUI")
+        lnch_title.setStyleSheet(
+            f"font-size:20px;font-weight:bold;color:{C['green']};padding-bottom:4px;")
+        layout.addWidget(lnch_title)
+
+        lnch_ver = QLabel(f"Version {APP_VERSION}")
+        lnch_ver.setStyleSheet(
+            f"color:{C['subtext']};font-size:12px;padding-bottom:12px;")
+        layout.addWidget(lnch_ver)
+
+        lnch_info = QLabel(
+            "EnvyUI is a Windows GUI application built on top of the TwinVine/Envied "
+            "ecosystem. It calls Envied directly — no VineFeeder dependency — giving "
+            "it a smaller footprint and faster setup than the original launcher.\n\n"
+            "The one-click installer handles everything automatically: Git, FFmpeg, "
+            "MKVToolNix, Bento4, Shaka Packager and all other required tools, plus "
+            "the full Python virtual environment. Once installed, click a service "
+            "button, search for a show, pick your episodes, and download.\n\n"
+            "In addition to the core services available on the main page, EnvyUI "
+            "includes an Extended Services page supporting a growing range of "
+            "additional platforms across the US, UK, Australia, New Zealand, "
+            "Canada, and Europe — accessible via direct URL or the Browse Series "
+            "episode picker.\n\n"
+            "Other features include batch mode for queuing multiple downloads, slow "
+            "mode for rate-limited services, Fetch Tracks for inspecting available "
+            "resolutions, and a built-in update checker. "
+            "Everything runs in one clean dark-themed window.\n\n"
+            "When a new version is available the update checker will direct you to "
+            "the GitHub releases page to download the latest zip. Extract it over "
+            "your existing install and run Install EnvyUI Tools to apply the update — "
+            "your credentials and settings are preserved automatically."
+        )
+        lnch_info.setWordWrap(True)
+        lnch_info.setStyleSheet(
+            f"color:{C['text']};font-size:12px;line-height:1.6;padding-bottom:12px;")
+        layout.addWidget(lnch_info)
+
+        lnch_btn = QPushButton("EnvyUI on GitHub")
+        lnch_btn.setStyleSheet(
+            f"background:{C['green']};color:{C['bg']};padding:8px 20px;"
+            f"border-radius:4px;font-weight:bold;border:none;")
+        lnch_btn.clicked.connect(lambda: webbrowser.open(LAUNCHER_URL))
+        lnch_btn.setFixedWidth(200)
+        layout.addWidget(lnch_btn)
+
+        # ── Divider ───────────────────────────────────────────────────────────
+        layout.addSpacing(30)
+        div = QFrame()
+        div.setFrameShape(QFrame.Shape.HLine)
+        div.setStyleSheet(f"color:{C['border']};margin:0;")
+        layout.addWidget(div)
+        layout.addSpacing(30)
+
+        # ── Section 2: TwinVine original project ─────────────────────────────
         tv_title = QLabel("TwinVine")
         tv_title.setStyleSheet(
             f"font-size:18px;font-weight:bold;color:{C['green']};padding-bottom:4px;")
@@ -8538,7 +11849,7 @@ ALL4, BBC iPlayer, ITVX, MY5, PLEX, RTE, STV, TPTV, TVNZ (untested), U
             "range of streaming services including BBC iPlayer, ITVX, All4, My5, STV, "
             "RTE, TPTV, TVNZ, Plex and more.\n\n"
             "Full credit for the underlying technology goes to the original authors. "
-            "Without their work this launcher would not exist."
+            "Without their work EnvyUI would not exist."
         )
         tv_info.setWordWrap(True)
         tv_info.setStyleSheet(
@@ -8552,50 +11863,6 @@ ALL4, BBC iPlayer, ITVX, MY5, PLEX, RTE, STV, TPTV, TVNZ (untested), U
         tv_btn.clicked.connect(lambda: webbrowser.open("https://github.com/vinefeeder/TwinVine"))
         tv_btn.setFixedWidth(200)
         layout.addWidget(tv_btn)
-
-        # ── Divider ───────────────────────────────────────────────────────────
-        layout.addSpacing(30)
-        div = QFrame()
-        div.setFrameShape(QFrame.Shape.HLine)
-        div.setStyleSheet(f"color:{C['border']};margin:0;")
-        layout.addWidget(div)
-        layout.addSpacing(30)
-
-        # ── Section 2: TwinVine Launcher ─────────────────────────────────────
-        lnch_title = QLabel("TwinVine Launcher")
-        lnch_title.setStyleSheet(
-            f"font-size:20px;font-weight:bold;color:{C['green']};padding-bottom:4px;")
-        layout.addWidget(lnch_title)
-
-        lnch_ver = QLabel(f"Version {APP_VERSION}")
-        lnch_ver.setStyleSheet(
-            f"color:{C['subtext']};font-size:12px;padding-bottom:12px;")
-        layout.addWidget(lnch_ver)
-
-        lnch_info = QLabel(
-            "TwinVine Launcher is a Windows GUI application that makes TwinVine "
-            "accessible to everyone — no terminal, no command line, no technical "
-            "knowledge required.\n\n"
-            "It handles the complete setup automatically: installing Git, FFmpeg, "
-            "MKVToolNix, Bento4 and all other required tools, then setting up the "
-            "Python environment. Once installed, you simply click a service button, "
-            "search for a show, select your episodes, and download.\n\n"
-            "Features include a live download panel with progress tracking, batch "
-            "mode for queuing multiple downloads, the HellYes DRM key tool, and a "
-            "built-in update checker. Everything runs in one clean dark-themed window."
-        )
-        lnch_info.setWordWrap(True)
-        lnch_info.setStyleSheet(
-            f"color:{C['text']};font-size:12px;line-height:1.6;padding-bottom:12px;")
-        layout.addWidget(lnch_info)
-
-        lnch_btn = QPushButton("TwinVine Launcher on GitHub")
-        lnch_btn.setStyleSheet(
-            f"background:{C['green']};color:{C['bg']};padding:8px 20px;"
-            f"border-radius:4px;font-weight:bold;border:none;")
-        lnch_btn.clicked.connect(lambda: webbrowser.open(LAUNCHER_URL))
-        lnch_btn.setFixedWidth(240)
-        layout.addWidget(lnch_btn)
 
         layout.addStretch()
         scroll.setWidget(inner)
@@ -8642,9 +11909,6 @@ ALL4, BBC iPlayer, ITVX, MY5, PLEX, RTE, STV, TPTV, TVNZ (untested), U
                 self._prog_lbl.setText("Ready.")
                 self._prog_lbl.setStyleSheet(f"color:{C['subtext']};")
 
-    def _load_vinefeeder(self):
-        """Populate service buttons — envied is always bundled, no bootstrap needed."""
-        self._populate_service_buttons()
 
 
 # ── Entry ─────────────────────────────────────────────────────────────────────
@@ -8657,7 +11921,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
 
-    window = TwinVineLauncher()
+    window = EnvyLauncher()
     window.show()
     sys.exit(app.exec())
 
