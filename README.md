@@ -24,7 +24,7 @@ TwinVine combines VineFeeder (a service scraper and download manager) with Envie
 
 ## Why This Project Exists
 
-TwinVine is a powerful tool but requires comfort with the command line to set up and use. I wanted to make it a little easier for me to install and use — no terminal, no technical knowledge, just a clean window where you click a service, pick your episodes, and download.
+TwinVine is a powerful tool but requires some comfort with the command line to set up and use. I wanted to make it a little easier for me to install and use — no terminal, no technical knowledge, just a clean window where you click a service, pick your episodes, and download.
 
 EnvyUI handles everything automatically: installing all required tools, setting up the Python environment, and providing a straightforward GUI that wraps the entire TwinVine workflow.
 
@@ -34,6 +34,16 @@ EnvyUI handles everything automatically: installing all required tools, setting 
 - For more complex downloads and use of other services I would strongly recommend the original developer's project above. You can still call Envied from the command line for services not listed in EnvyUI or for more complex downloads, but this is not supported so your mileage may vary.
 ---
 
+## Known Issues & Quirks
+
+This release. The following known issues exist — contributions and bug reports are welcome.
+
+**1. CWTV** When using browse by category it will list all shows rather than genres/categories as at this time we've been unable to get the data from CWTV, keyword search for a particular show would be a better option at present.
+**2. Download Log Panel** Sometimes the live data will disappear for a slit second every now and then, the download is still ongoing just a minor quirk that is actively being fixed.
+**3. Download Log Panel** Sometimes it may take a short while for the live download data to show in the download log panel so please give it a little while to appear before you cancel a download.
+**4. Browser by Category** When fetching information from a service can sometime take a little bit of time to get, especially if a list is large and it could also depend on your connection speed, you will see an error if it fails to get any results.
+
+---
 
 ## Pre-requirements
 
@@ -48,7 +58,7 @@ Before installing, you will need:
   - During installation tick **"Add Python to PATH"**
   - Do **not** use the Microsoft Store version of Python or the install manager from Python at this time.
 
-Everything else (Git, FFmpeg, MKVToolNix, Bento4, Shaka Packager, N_m3u8DL-RE, dovi_tool, hdr10plus_tool, SubtitleEdit, and all Python packages) is downloaded and installed automatically by the app.
+Everything else (Git, FFmpeg, MKVToolNix, Bento4, Shaka Packager, N_m3u8DL-RE, dovi_tool, hdr10plus_tool, CCExtractor, SubtitleEdit, and all Python packages) is downloaded and installed automatically by the app.
 
 - **Services Credentials** - Some services like All4 require login details, username/password before they will download, please see the help page for more details after install.
 - **VPN Use** - Some services may require the use of a VPN depending on your location.
@@ -114,6 +124,7 @@ Toggle **Batch Mode** on to queue episodes from multiple shows before downloadin
 
 ### Ready to Use
 ![Ready To Use](https://github.com/Lseauk/EnvyUI/blob/main/Images/04%20-%20Main.png?raw=true)
+![Ready To Use](https://github.com/Lseauk/EnvyUI/blob/main/Images/04%20-%20Main%2002.png?raw=true)
 
 ### Service Button Actions
 ![Service Button Action](https://github.com/Lseauk/EnvyUI/blob/main/Images/05%20-%20Service%20Button%20Click.png?raw=true)
@@ -133,9 +144,6 @@ Toggle **Batch Mode** on to queue episodes from multiple shows before downloadin
 ### Extended Services
 ![Extended Services](https://github.com/Lseauk/EnvyUI/blob/main/Images/10%20-%20Extended%20Services.png?raw=true)
 
-### HellYes — Manual DRM Key Extraction
-![HellYes](https://github.com/Lseauk/EnvyUI/blob/main/Images/11%20-%20Hell%20Yes.png?raw=true)
-
 ### Log Panel
 ![Log Panel](https://github.com/Lseauk/EnvyUI/blob/main/Images/12%20-%20Log%20Panel.png?raw=true)
 
@@ -149,9 +157,11 @@ Toggle **Batch Mode** on to queue episodes from multiple shows before downloadin
 
 ## Supported Services
 
-**Main page:** ALL4 · BBC iPlayer · ITVX · MY5 · PLEX · RTE · STV · TPTV · TVNZ · UKTV · WTV
+> **⚠ While some services on the app may have paid for or subscription plans we can only offer support or bug reports for Free-to-air content only as we are unable to test anything other than services that offer Free-to-air content and while envied lists over 60 services we only list services that we have been able to test and are known to work with the app, you can of course still use envied from a terminal window inside the EnvyCore folder if you're familiar with envied commands structure. All services listed below are free to watch without a subscription (though some require a free account for login).**
 
-**Extended Services page:** Tubi · Pluto TV · Rakuten TV · VM · ABC iView (AU) · SBS (AU) · 7plus (AU) · 9Now (AU) · 10 (AU) · ThreeNow (NZ) · Roku Channel · CBS · PBS · CBC Gem · Crave · NPO · ARD Mediathek · NRK
+**Main page:** ALL4 · BBC iPlayer · ITVX · My5 · U (UKTV) · RTE · STV · TPTV · Rakuten TV · Tubi · Pluto TV · VM Play (IE) · TVNZ · ThreeNow (NZ) · ABC iView (AU) · 7plus (AU) · 9Now (AU) · 10play (AU) · SBS On Demand (AU) · Roku (US) · CBS (US) · NBC · PBS · The CW (US) · Crave · CBC Gem · Plex
+
+**Extended Services page:** Blaze TV, NFBC, RTE+, NPO, ARD Mediathek, NRK
 
 ---
 
@@ -170,3 +180,4 @@ Your feedback helps make it better for everyone.
 ## Disclaimer
 
 This tool is intended for personal use only. You are responsible for ensuring you have the right to download any content you access. The authors of EnvyUI take no responsibility for how this software is used.
+
