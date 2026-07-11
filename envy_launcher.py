@@ -1,5 +1,5 @@
 """
-EnvyUI  v1.0.1
+EnvyUI  v1.0.2
 ==============
 A self-contained Windows launcher for the envied download engine.
 
@@ -219,7 +219,7 @@ REQUESTS_AVAILABLE = True  # urllib.request is stdlib — always available
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 APP_NAME        = "EnvyUI"
-APP_VERSION     = "1.0.1"
+APP_VERSION     = "1.0.2"
 GITHUB_REPO     = "Lseauk/EnvyUI"
 GITHUB_URL      = f"https://github.com/{GITHUB_REPO}"
 LAUNCHER_URL    = "https://github.com/Lseauk/EnvyUI"
