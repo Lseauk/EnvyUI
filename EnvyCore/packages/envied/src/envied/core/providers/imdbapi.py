@@ -13,6 +13,22 @@ KIND_TO_TYPES: dict[str, list[str]] = {
     "tv": ["tvSeries", "tvMiniSeries"],
 }
 
+# Session-level connectivity cache: None = unchecked, True/False = result
+_imdbapi_reachable: Optional[bool] = None
+
+
+def _check_imdbapi_reachable() -> bool:
+    """Ping imdbapi.dev once per session and cache the result."""
+    global _imdbapi_reachable
+    if _imdbapi_reachable is not None:
+        return _imdbapi_reachable
+    try:
+        r = requests.get("https://api.imdbapi.dev/search/titles?query=test&limit=1", timeout=4)
+        _imdbapi_reachable = r.status_code < 500
+    except Exception:
+        _imdbapi_reachable = False
+    return _imdbapi_reachable
+
 
 class IMDBApiProvider(MetadataProvider):
     """IMDb metadata provider using imdbapi.dev (free, no API key)."""
@@ -22,7 +38,7 @@ class IMDBApiProvider(MetadataProvider):
     BASE_URL = "https://api.imdbapi.dev"
 
     def is_available(self) -> bool:
-        return True  # no key needed
+        return _check_imdbapi_reachable()
 
     def search(self, title: str, year: Optional[int], kind: str) -> Optional[MetadataResult]:
         self.log.debug("Searching IMDBApi for %r (%s, %s)", title, kind, year)

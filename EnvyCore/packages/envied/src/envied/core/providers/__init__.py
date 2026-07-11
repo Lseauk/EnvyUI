@@ -6,14 +6,15 @@ import requests
 
 from envied.core.providers._base import ExternalIds, MetadataProvider, MetadataResult, fuzzy_match, log
 from envied.core.providers.imdbapi import IMDBApiProvider
+from envied.core.providers.omdb import OmdbProvider
 from envied.core.providers.simkl import SimklProvider
 from envied.core.providers.tmdb import TMDBProvider
 
 if TYPE_CHECKING:
     from envied.core.title_cacher import TitleCacher
 
-# Ordered by priority: IMDBApi (free), SIMKL, TMDB
-ALL_PROVIDERS: list[type[MetadataProvider]] = [IMDBApiProvider, SimklProvider, TMDBProvider]
+# Ordered by priority: IMDBApi (skipped if unreachable) → TMDB → OMDb → SIMKL
+ALL_PROVIDERS: list[type[MetadataProvider]] = [IMDBApiProvider, TMDBProvider, OmdbProvider, SimklProvider]
 
 
 def get_available_providers() -> list[MetadataProvider]:
