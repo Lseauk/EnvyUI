@@ -46,7 +46,7 @@ This release. The following known issues exist — contributions and bug reports
 
 **4. Browser by Category** When fetching information from a service can sometime take a little bit of time to get, especially if a list is large and it could also depend on your connection speed, you will see an error if it fails to get any results.
 
-**5. IMDBApi Error in Download Log Panel** imdbapi.dev is down or unavailable, which will show as an error when downloading, while this does not affect the actual download we added a fix for this, see the changelog and the help page of the app to address this issue.
+**5. IMDBApi Error in Download Log Panel** imdbapi.dev is down or unavailable, which will show as an error when downloading, while this does not affect the actual download we added a fix for this, see the help page of the app to address this issue.
 
 ---
 
