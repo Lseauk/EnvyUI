@@ -109,10 +109,26 @@ var term = new Terminal({{
   cols: 120,
   rows: 32,
 }});
-term.open(document.getElementById('terminal'));
+var termEl = document.getElementById('terminal');
+term.open(termEl);
+function _fitTerm() {{
+  var h = termEl.clientHeight;
+  var w = termEl.clientWidth;
+  if (h <= 0 || w <= 0) return;
+  var cellH = term._core._renderService.dimensions.css.cell.height || 17;
+  var cellW = term._core._renderService.dimensions.css.cell.width  || 7;
+  var newRows = Math.max(4, Math.floor(h / cellH));
+  var newCols = Math.max(40, Math.floor(w / cellW));
+  if (newRows !== term.rows || newCols !== term.cols) {{
+    term.resize(newCols, newRows);
+  }}
+}}
+var _ro = new ResizeObserver(function() {{ _fitTerm(); }});
+_ro.observe(termEl);
+setTimeout(_fitTerm, 100);
 window._envyWrite = function(b64) {{
   var bytes = Uint8Array.from(atob(b64), function(c) {{ return c.charCodeAt(0); }});
-  term.write(bytes);
+  term.write(bytes, function() {{ term.scrollToBottom(); }});
 }};
 window._envyReset = function() {{
   term.reset();
@@ -129,7 +145,7 @@ window._envyReset = function() {{
         self._pending: list[bytes] = []   # written before page loads
         self._batch:   list[bytes] = []   # 50ms write batching
         self._batch_pending = False
-        self.setMinimumHeight(300)
+        self.setMinimumHeight(200)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.page().setBackgroundColor(QColor(bg))
         s = self.settings()
@@ -3360,20 +3376,32 @@ class CategoryShowsWorker(QThread):
             self.error.emit(f"Failed to fetch category shows: {exc}")
 
     def _bbc(self) -> list:
-        data = self._fetch_json(
-            f"https://ibl.api.bbci.co.uk/ibl/v1/categories/{self._id}/programmes"
-            f"?rights=web&availability=available&per_page=100&api_key={self._API_KEY}"
-        )
         shows = []
-        for item in (data.get("category_programmes") or {}).get("elements", []):
-            pid = item.get("id", "")
-            if not pid:
-                continue
-            shows.append({
-                "title":    item.get("title", pid),
-                "synopsis": (item.get("synopses") or {}).get("small", ""),
-                "url":      f"https://www.bbc.co.uk/iplayer/brand/{pid}",
-            })
+        seen = set()
+        page = 1
+        per_page = 100
+        while True:
+            data = self._fetch_json(
+                f"https://ibl.api.bbci.co.uk/ibl/v1/categories/{self._id}/programmes"
+                f"?rights=web&availability=available&per_page={per_page}&page={page}&api_key={self._API_KEY}"
+            )
+            cat = data.get("category_programmes") or {}
+            elements = cat.get("elements") or []
+            for item in elements:
+                pid = item.get("id", "")
+                if not pid or pid in seen:
+                    continue
+                seen.add(pid)
+                shows.append({
+                    "title":    item.get("title", pid),
+                    "synopsis": (item.get("synopses") or {}).get("small", ""),
+                    "url":      f"https://www.bbc.co.uk/iplayer/brand/{pid}",
+                })
+            if len(elements) < per_page:
+                break
+            page += 1
+            if page > 20:
+                break
         return shows
 
     def _fetch_html(self, url: str, headers: dict | None = None) -> str:
@@ -6576,6 +6604,53 @@ class _UpdateCheckThread(QThread):
         self.result_ready.emit(remote, self._local)
 
 
+class _ProviderCheckThread(QThread):
+    """Checks metadata provider availability once at startup."""
+    # Emit comma-separated "name:1" or "name:0" pairs e.g. "IMDBApi:0,TMDB:1,OMDb:1,SIMKL:0"
+    result_ready = pyqtSignal(str)
+
+    def run(self):
+        try:
+            import re as _re, urllib.request as _ur
+            from pathlib import Path as _P
+
+            # Read keys directly from envied.yaml (envied is in venv, not system Python)
+            cfg = load_config()
+            yaml_path = _P(cfg.get("install_dir", "")) / "packages/envied/src/envied/envied.yaml"
+            tmdb_key = ""
+            omdb_key = ""
+            simkl_key = ""
+            if yaml_path.exists():
+                for line in yaml_path.read_text(encoding="utf-8").splitlines():
+                    m = _re.match(r"^\s*tmdb_api_key\s*:\s*[\"']?([^\"'\s#]+)[\"']?", line)
+                    if m:
+                        tmdb_key = m.group(1)
+                    m = _re.match(r"^\s*omdb_api_key\s*:\s*[\"']?([^\"'\s#]+)[\"']?", line)
+                    if m:
+                        omdb_key = m.group(1)
+                    m = _re.match(r"^\s*simkl_client_id\s*:\s*[\"']?([^\"'\s#]+)[\"']?", line)
+                    if m:
+                        simkl_key = m.group(1)
+
+            # Ping imdbapi.dev
+            imdb_ok = False
+            try:
+                with _ur.urlopen("https://api.imdbapi.dev/search/titles?query=test&limit=1", timeout=4) as r:
+                    imdb_ok = r.status < 500
+            except Exception:
+                imdb_ok = False
+
+            parts = [
+                f"IMDBApi:{1 if imdb_ok else 0}",
+                f"TMDB:{1 if tmdb_key else 0}",
+                f"OMDb:{1 if omdb_key else 0}",
+                f"SIMKL:{1 if simkl_key else 0}",
+            ]
+            self.result_ready.emit(",".join(parts))
+        except Exception:
+            self.result_ready.emit("")
+
+
 class InstallWorker(QThread):
     log_line  = pyqtSignal(str)
     step_done = pyqtSignal(str, str)   # key, state
@@ -7589,6 +7664,140 @@ class InstallWorker(QThread):
             except Exception as _pbs_e:
                 self._log(f"Note: could not patch PBS/__init__.py: {_pbs_e}")
 
+            # ── Patch providers/imdbapi.py: add session-level connectivity check ──
+            # imdbapi.dev goes down periodically. Without this patch is_available()
+            # always returns True, causing 3 retry errors per download while it waits.
+            # The patch adds a one-time ping at startup that caches the result for
+            # the session, so dead providers are skipped immediately.
+            _imdbapi_py = d / "packages/envied/src/envied/core/providers/imdbapi.py"
+            _IMDBAPI_SENTINEL = "_check_imdbapi_reachable"
+            _IMDBAPI_OLD = "    def is_available(self) -> bool:\n        return True  # no key needed"
+            _IMDBAPI_NEW = (
+                "_imdbapi_reachable: Optional[bool] = None\n"
+                "\n"
+                "\n"
+                "def _check_imdbapi_reachable() -> bool:\n"
+                '    """Ping imdbapi.dev once per session and cache the result."""\n'
+                "    global _imdbapi_reachable\n"
+                "    if _imdbapi_reachable is not None:\n"
+                "        return _imdbapi_reachable\n"
+                "    try:\n"
+                '        r = requests.get("https://api.imdbapi.dev/search/titles?query=test&limit=1", timeout=4)\n'
+                "        _imdbapi_reachable = r.status_code < 500\n"
+                "    except Exception:\n"
+                "        _imdbapi_reachable = False\n"
+                "    return _imdbapi_reachable\n"
+                "\n"
+                "\n"
+                "class IMDBApiProvider(MetadataProvider):\n"
+                '    """IMDb metadata provider using imdbapi.dev (free, no API key)."""\n'
+                "\n"
+                '    NAME = "imdbapi"\n'
+                "    REQUIRES_KEY = False\n"
+                '    BASE_URL = "https://api.imdbapi.dev"\n'
+                "\n"
+                "    def is_available(self) -> bool:\n"
+                "        return _check_imdbapi_reachable()"
+            )
+            try:
+                if _imdbapi_py.exists():
+                    _imdbapi_txt = _imdbapi_py.read_text(encoding="utf-8")
+                    if _IMDBAPI_SENTINEL not in _imdbapi_txt:
+                        # Remove the class declaration lines that we're replacing
+                        _OLD_BLOCK = (
+                            "class IMDBApiProvider(MetadataProvider):\n"
+                            '    """IMDb metadata provider using imdbapi.dev (free, no API key)."""\n'
+                            "\n"
+                            '    NAME = "imdbapi"\n'
+                            "    REQUIRES_KEY = False\n"
+                            '    BASE_URL = "https://api.imdbapi.dev"\n'
+                            "\n"
+                            "    def is_available(self) -> bool:\n"
+                            "        return True  # no key needed"
+                        )
+                        if _OLD_BLOCK in _imdbapi_txt:
+                            _imdbapi_bak = _imdbapi_py.with_suffix(".py.bak")
+                            if not _imdbapi_bak.exists():
+                                _imdbapi_bak.write_text(_imdbapi_txt, encoding="utf-8")
+                            _imdbapi_py.write_text(_imdbapi_txt.replace(_OLD_BLOCK, _IMDBAPI_NEW), encoding="utf-8")
+                            self._log("Patched providers/imdbapi.py: added connectivity check.")
+                        else:
+                            self._log("providers/imdbapi.py: expected block not found — skipped.")
+                    else:
+                        self._log("providers/imdbapi.py already patched — skipped.")
+            except Exception as _ie:
+                self._log(f"Note: could not patch providers/imdbapi.py: {_ie}")
+
+            # ── Patch providers/__init__.py: add OMDb, reorder providers ─────────
+            # Default order is IMDBApi → SIMKL → TMDB which means every download
+            # hits SIMKL (a tracking site, not a metadata CDN) before TMDB.
+            # Correct order: IMDBApi (skipped if unreachable) → TMDB → OMDb → SIMKL.
+            _prov_init = d / "packages/envied/src/envied/core/providers/__init__.py"
+            _PROV_SENTINEL = "OmdbProvider"
+            _PROV_OLD_IMPORT = (
+                "from envied.core.providers.imdbapi import IMDBApiProvider\n"
+                "from envied.core.providers.simkl import SimklProvider\n"
+                "from envied.core.providers.tmdb import TMDBProvider"
+            )
+            _PROV_NEW_IMPORT = (
+                "from envied.core.providers.imdbapi import IMDBApiProvider\n"
+                "from envied.core.providers.omdb import OmdbProvider\n"
+                "from envied.core.providers.simkl import SimklProvider\n"
+                "from envied.core.providers.tmdb import TMDBProvider"
+            )
+            _PROV_OLD_LIST = "ALL_PROVIDERS: list[type[MetadataProvider]] = [IMDBApiProvider, SimklProvider, TMDBProvider]"
+            _PROV_NEW_LIST = "ALL_PROVIDERS: list[type[MetadataProvider]] = [IMDBApiProvider, TMDBProvider, OmdbProvider, SimklProvider]"
+            try:
+                if _prov_init.exists():
+                    _prov_txt = _prov_init.read_text(encoding="utf-8")
+                    if _PROV_SENTINEL not in _prov_txt:
+                        _changed = False
+                        if _PROV_OLD_IMPORT in _prov_txt:
+                            _prov_txt = _prov_txt.replace(_PROV_OLD_IMPORT, _PROV_NEW_IMPORT)
+                            _changed = True
+                        if _PROV_OLD_LIST in _prov_txt:
+                            _prov_txt = _prov_txt.replace(_PROV_OLD_LIST, _PROV_NEW_LIST)
+                            _changed = True
+                        if _changed:
+                            _prov_bak = _prov_init.with_suffix(".py.bak")
+                            if not _prov_bak.exists():
+                                _prov_bak.write_text(_prov_init.read_text(encoding="utf-8"), encoding="utf-8")
+                            _prov_init.write_text(_prov_txt, encoding="utf-8")
+                            self._log("Patched providers/__init__.py: added OMDb, reordered providers.")
+                        else:
+                            self._log("providers/__init__.py: expected text not found — skipped.")
+                    else:
+                        self._log("providers/__init__.py already patched — skipped.")
+            except Exception as _pe:
+                self._log(f"Note: could not patch providers/__init__.py: {_pe}")
+
+            # ── Patch core/config.py: add omdb_api_key field ─────────────────────
+            # Required for the OMDb provider to read its key from envied.yaml.
+            _config_py = d / "packages/envied/src/envied/core/config.py"
+            _CONFIG_SENTINEL = "omdb_api_key"
+            _CONFIG_OLD = '        self.tmdb_api_key: str = kwargs.get("tmdb_api_key") or ""\n        self.simkl_client_id'
+            _CONFIG_NEW = (
+                '        self.tmdb_api_key: str = kwargs.get("tmdb_api_key") or ""\n'
+                '        self.omdb_api_key: str = kwargs.get("omdb_api_key") or ""\n'
+                '        self.simkl_client_id'
+            )
+            try:
+                if _config_py.exists():
+                    _config_txt = _config_py.read_text(encoding="utf-8")
+                    if _CONFIG_SENTINEL not in _config_txt:
+                        if _CONFIG_OLD in _config_txt:
+                            _config_bak = _config_py.with_suffix(".py.bak")
+                            if not _config_bak.exists():
+                                _config_bak.write_text(_config_txt, encoding="utf-8")
+                            _config_py.write_text(_config_txt.replace(_CONFIG_OLD, _CONFIG_NEW), encoding="utf-8")
+                            self._log("Patched core/config.py: added omdb_api_key field.")
+                        else:
+                            self._log("core/config.py: expected text not found — skipped.")
+                    else:
+                        self._log("core/config.py already patched — skipped.")
+            except Exception as _ce:
+                self._log(f"Note: could not patch core/config.py: {_ce}")
+
             self._step("yaml", "done")
             self._step("done", "done")
             self.progress.emit(1.0, "Done ✓")
@@ -7730,7 +7939,7 @@ class EnvyLauncher(QMainWindow):
         sidebar.setFixedWidth(230)
         sidebar.setStyleSheet(f"background:{C['surface']};border-right:1px solid {C['border']};")
         sb_layout = QVBoxLayout(sidebar)
-        sb_layout.setContentsMargins(0, 0, 0, 0)
+        sb_layout.setContentsMargins(0, 0, 1, 0)
         sb_layout.setSpacing(0)
 
         # Logo
@@ -7774,6 +7983,42 @@ class EnvyLauncher(QMainWindow):
             self._nav_btns[key] = b
 
         sb_layout.addStretch()
+
+        # ── Metadata provider status indicator ────────────────────────────────
+        line_meta = QFrame(); line_meta.setFrameShape(QFrame.Shape.HLine)
+        sb_layout.addWidget(line_meta)
+
+        meta_frame = QFrame()
+        meta_frame.setStyleSheet(f"background:{C['surface']};border:none;")
+        meta_outer = QVBoxLayout(meta_frame)
+        meta_outer.setContentsMargins(10, 6, 10, 6)
+        meta_outer.setSpacing(3)
+
+        meta_title = QLabel("Metadata")
+        meta_title.setStyleSheet(f"color:{C['subtext']};font-size:10px;border:none;")
+        meta_outer.addWidget(meta_title)
+
+        from PyQt6.QtWidgets import QGridLayout
+        meta_grid = QGridLayout()
+        meta_grid.setContentsMargins(0, 0, 0, 0)
+        meta_grid.setHorizontalSpacing(6)
+        meta_grid.setVerticalSpacing(2)
+        meta_grid.setColumnStretch(1, 1)
+        meta_grid.setColumnStretch(3, 1)
+
+        self._meta_status_labels: dict[str, QLabel] = {}
+        for row_idx, (left, right) in enumerate((("IMDBApi", "TMDB"), ("OMDb", "SIMKL"))):
+            for col_offset, provider_name in ((0, left), (2, right)):
+                dot = QLabel("●")
+                dot.setStyleSheet(f"color:{C['subtext']};font-size:9px;border:none;")
+                lbl = QLabel(provider_name)
+                lbl.setStyleSheet(f"color:{C['subtext']};font-size:10px;border:none;")
+                meta_grid.addWidget(dot, row_idx, col_offset)
+                meta_grid.addWidget(lbl, row_idx, col_offset + 1)
+                self._meta_status_labels[provider_name] = dot
+
+        meta_outer.addLayout(meta_grid)
+        sb_layout.addWidget(meta_frame)
 
         # ── Batch Mode in sidebar — all on one row ────────────────────────────
         line_b = QFrame(); line_b.setFrameShape(QFrame.Shape.HLine)
@@ -7881,7 +8126,8 @@ class EnvyLauncher(QMainWindow):
     def _build_download_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setContentsMargins(24, 10, 24, 20)
+        #layout.setSpacing(4)
 
         # ── Header row: "Download" title + Envied Config right-aligned ──
         hdr_row = QHBoxLayout()
@@ -7902,10 +8148,11 @@ class EnvyLauncher(QMainWindow):
         layout.addLayout(hdr_row)
 
         sub = QLabel("Search for a show, paste a URL, or browse by category.")
-        sub.setStyleSheet(f"color:{C['subtext']};padding-bottom:8px;")
+        sub.setStyleSheet(f"color:{C['subtext']};padding-bottom:0px;")
         layout.addWidget(sub)
 
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setFixedHeight(1)
         layout.addWidget(sep)
 
         # ── Status banner + HLG toggle ──
@@ -7936,7 +8183,7 @@ class EnvyLauncher(QMainWindow):
 
         # ── Search box ──
         search_lbl = QLabel("URL or Search")
-        search_lbl.setStyleSheet(f"color:{C['subtext']};margin-top:8px;")
+        search_lbl.setStyleSheet(f"color:{C['subtext']};margin-top:2px;")
         layout.addWidget(search_lbl)
         self._search_entry = QLineEdit()
         self._search_entry.setPlaceholderText(
@@ -7945,7 +8192,7 @@ class EnvyLauncher(QMainWindow):
 
         # ── Service buttons header (label + inline pagination) ──
         svc_header_row = QHBoxLayout()
-        svc_header_row.setContentsMargins(0, 8, 0, 0)
+        svc_header_row.setContentsMargins(0, 4, 0, 0)
         svc_lbl = QLabel("Services")
         svc_lbl.setStyleSheet(f"color:{C['subtext']};font-size:10px;")
         svc_header_row.addWidget(svc_lbl)
@@ -7977,7 +8224,7 @@ class EnvyLauncher(QMainWindow):
         svc_scroll = QScrollArea()
         svc_scroll.setWidget(self._svc_frame)
         svc_scroll.setWidgetResizable(True)
-        svc_scroll.setFixedHeight(115)
+        svc_scroll.setFixedHeight(125)
         svc_scroll.setStyleSheet("border:none;")
         layout.addWidget(svc_scroll)
 
@@ -8014,7 +8261,7 @@ class EnvyLauncher(QMainWindow):
         # Scrollable list
         self._sel_scroll = QScrollArea()
         self._sel_scroll.setWidgetResizable(True)
-        self._sel_scroll.setMinimumHeight(360)
+        self._sel_scroll.setMinimumHeight(220)
         self._sel_scroll.setStyleSheet(
             f"background:{C['bg']};border:1px solid {C['border']};")
         self._sel_list_widget = QWidget()
@@ -8376,7 +8623,7 @@ class EnvyLauncher(QMainWindow):
         self._dl_progress = QProgressBar()  # kept for signal compat, hidden permanently
         self._dl_progress.setVisible(False)
         self._dl_term = _TermView(C['bg'], C['subtext'], scroll_thumb=C['border'])
-        self._dl_term.setMinimumHeight(410)
+        self._dl_term.setMinimumHeight(260)
         dl_panel_layout.addWidget(self._dl_term, stretch=1)
         self._dl_cancel_btn = QPushButton("\u2715  Cancel Download")
         self._dl_cancel_btn.setStyleSheet(
@@ -8511,10 +8758,10 @@ class EnvyLauncher(QMainWindow):
         return service_id
 
     def _populate_service_buttons(self, page: int = 0):
-        """Populate service buttons for the given page (3 rows × 7 per page)."""
+        """Populate service buttons for the given page (4 rows × 7 per page)."""
         COLS     = 7
-        ROWS     = 3
-        PER_PAGE = COLS * ROWS   # 21
+        ROWS     = 4
+        PER_PAGE = COLS * ROWS   # 28
 
         services   = list(CORE_SERVICES)
         total_pages = max(1, -(-len(services) // PER_PAGE))  # ceiling div
@@ -11667,6 +11914,45 @@ The **Build EXE** button on the Install / Update page packages EnvyUI into a sta
 
 ---
 
+## Metadata Tagging (IMDB / TMDB / TVDB)
+
+After each download, EnvyUI attempts to look up the title and embed metadata tags (IMDB ID, TMDB ID, TVDB ID) directly into the MKV file. Media servers such as Plex, Jellyfin, and Infuse use these tags to instantly match the file to the correct show or movie without guessing from the filename.
+
+**IMDBApi error messages during downloads**
+
+You may occasionally see retry errors like `Retrying ... IMDBApi` in the download log. This means the free `api.imdbapi.dev` service is temporarily down. EnvyUI will automatically skip it and fall through to TMDB or OMDb — your download will complete normally. No action is required, but adding a TMDB or OMDb API key (below) ensures metadata is always found even when IMDBApi is unavailable.
+
+**Adding a TMDB API key (recommended)**
+
+TMDB is the most comprehensive metadata source and is free to use.
+
+1. Create a free account at [themoviedb.org](https://www.themoviedb.org)
+2. Go to **Settings → API** and request an API key (choose Developer)
+3. Copy your **API Read Access Token** (the long one) — or the shorter **API Key (v3)**
+4. Open `envied.yaml` inside **EnvyCore / packages / envied / src / envied /**
+5. Find the line `tmdb_api_key: ""` and add your key between the quotes
+
+**Adding an OMDb API key (optional fallback)**
+
+OMDb is a secondary fallback backed by IMDb data. The free tier allows 1,000 requests per day.
+
+1. Register for a free key at [omdbapi.com/apikey.aspx](https://www.omdbapi.com/apikey.aspx)
+2. Activate the key from the confirmation email
+3. Open `envied.yaml` and find the line `omdb_api_key: ""` and add your key between the quotes
+
+**Provider priority order**
+
+EnvyUI tries providers in this order, skipping any that are unavailable:
+
+1. **IMDBApi** — free, no key needed, but may be down occasionally
+2. **TMDB** — requires a free API key, most reliable
+3. **OMDb** — requires a free API key, good fallback
+4. **SIMKL** — requires a free client ID, niche/anime focus
+
+The coloured dots in the sidebar show which providers are currently active (green = available, red = unavailable or no key).
+
+---
+
 ## Supported Services
 
 **Please note: Some services require login credentials and/or cookie files.** To add credentials, click **Envied Config** on the Home page and fill in the relevant section for each service. To add cookies, place your cookie text file in the **Cookies** folder inside EnvyCore — the file should be named after the service, for example: `PBS.txt`.
@@ -11678,6 +11964,8 @@ The **Build EXE** button on the Install / Update page packages EnvyUI into a sta
 **Extended Services page:** **Extended Services page:** Blaze TV, NFBC, RTE+, NPO, ARD Mediathek, NRK
 
 **Reordering or hiding main page buttons** — The order of the main page service buttons can be customised by editing the `CORE_SERVICES` list near the top of `envy_launcher.py`. Each entry is a short line like `{"id": "ALL4", "label": "ALL4"}` — simply cut and paste lines into whichever order you prefer and restart the app. If more than 14 services are on the main page, buttons are spread across pages navigated with the Prev / Next controls that appear in the Services header. To hide a service you don't use, add a `#` at the start of its line to comment it out — it will no longer appear on the main page but can be restored at any time by removing the `#`.
+
+**Adjusting the app height for smaller screens** — If the app is too tall for your screen, open `envy_launcher.py` in a text editor and find `self.resize(1100, 900)` near the top of the file. Change the `900` to a smaller value — `750` works well on most 15.6" laptops. The download panel will automatically adjust to fit.
 
 ---
 
@@ -11910,6 +12198,27 @@ EnvyUI updates are distributed as zip files on the GitHub releases page. When a 
                 self._prog_lbl.setStyleSheet(f"color:{C['subtext']};")
 
 
+    def _check_metadata_providers(self):
+        """Run provider availability checks in a background thread and update sidebar dots."""
+        self._provider_check_thread = _ProviderCheckThread()
+        self._provider_check_thread.result_ready.connect(self._on_provider_check_result)
+        self._provider_check_thread.start()
+
+    def _on_provider_check_result(self, payload: str):
+        if not payload:
+            return
+        for part in payload.split(","):
+            try:
+                name, val = part.split(":")
+                ok = val == "1"
+            except ValueError:
+                continue
+            dot = self._meta_status_labels.get(name)
+            if dot:
+                colour = C["green"] if ok else C["red"]
+                dot.setStyleSheet(f"color:{colour};font-size:9px;border:none;")
+                dot.setToolTip(f"{name}: {'available' if ok else 'unavailable / no key'}")
+
 
 # ── Entry ─────────────────────────────────────────────────────────────────────
 
@@ -11923,6 +12232,7 @@ def main():
 
     window = EnvyLauncher()
     window.show()
+    QTimer.singleShot(500, window._check_metadata_providers)
     sys.exit(app.exec())
 
 

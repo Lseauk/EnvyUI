@@ -4,7 +4,7 @@
 
 # EnvyUI
 
-**A Windows GUI for TwinVine's (Envied)**
+**A Windows GUI for TwinVine (Envied)**
 
 ![Windows](https://img.shields.io/badge/Platform-Windows%2010%2F11-blue?style=flat-square)
 ![Version](https://img.shields.io/badge/Version-1.0.0%20Beta-green?style=flat-square)
@@ -39,12 +39,10 @@ EnvyUI handles everything automatically: installing all required tools, setting 
 This release. The following known issues exist — contributions and bug reports are welcome.
 
 **1. CWTV** When using browse by category it will list all shows rather than genres/categories as at this time we've been unable to get the data from CWTV, keyword search for a particular show would be a better option at present.
-
 **2. Download Log Panel** Sometimes the live data will disappear for a slit second every now and then, the download is still ongoing just a minor quirk that is actively being fixed.
-
 **3. Download Log Panel** Sometimes it may take a short while for the live download data to show in the download log panel so please give it a little while to appear before you cancel a download.
-
 **4. Browser by Category** When fetching information from a service can sometime take a little bit of time to get, especially if a list is large and it could also depend on your connection speed, you will see an error if it fails to get any results.
+**5. IMDBApi Error in Download Log Panel** imdbapi.dev is down or unavailable, which will show as an error when downloading, while this does not affect the actual download we added a fix for this, see the changelog and the help page of the app to address this issue.
 
 ---
 
@@ -183,4 +181,3 @@ Your feedback helps make it better for everyone.
 ## Disclaimer
 
 This tool is intended for personal use only. You are responsible for ensuring you have the right to download any content you access. The authors of EnvyUI take no responsibility for how this software is used.
-
