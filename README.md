@@ -4,7 +4,7 @@
 
 # EnvyUI
 
-**A Windows GUI for TwinVine (Envied)**
+**A Windows GUI for TwinVine's (Envied)**
 
 ![Windows](https://img.shields.io/badge/Platform-Windows%2010%2F11-blue?style=flat-square)
 ![Version](https://img.shields.io/badge/Version-1.0.0%20Beta-green?style=flat-square)
