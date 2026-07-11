@@ -40,7 +40,7 @@ This release. The following known issues exist — contributions and bug reports
 
 **1. CWTV** When using browse by category it will list all shows rather than genres/categories as at this time we've been unable to get the data from CWTV, keyword search for a particular show would be a better option at present.
 
-**2. Download Log Panel** Sometimes the live data will disappear for a slit second every now and then, the download is still ongoing just a minor quirk that is actively being fixed.
+**2. Download Log Panel** Sometimes the live data will disappear for a split second every now and then, the download is still ongoing just a minor quirk that is actively being fixed.
 
 **3. Download Log Panel** Sometimes it may take a short while for the live download data to show in the download log panel so please give it a little while to appear before you cancel a download.
 
