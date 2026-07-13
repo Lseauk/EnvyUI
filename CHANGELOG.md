@@ -1,5 +1,17 @@
 # EnvyUI Changelog
 
+**EnvyUI v1.0.4**
+
+-- **Build Exe** Reworked launcher approach
+
+The Build EXE function has been rebuilt from the ground up. Previously it used PyInstaller to bundle a self-contained Python environment inside the exe, which caused downloads to behave differently from the batch file (no live progress, grey scrolling text instead of the normal coloured download panel).
+
+The exe now works as a small launcher that uses your existing Python installation — the same one the batch file uses — so downloads are identical in both. The build also produces EnvyUI.lnk alongside the exe.
+
+To launch / pin to Start: use EnvyUI.exe (double-click or right-click → Pin to Start in File Explorer)
+To pin to taskbar: right-click EnvyUI.lnk → Pin to taskbar (using the exe directly causes two icons)
+Updates: in most cases only envy_launcher.py needs replacing — no rebuild required
+
 **EnvyUI v1.0.3**
 
 -- **Added Back Button** When using Browse by Category and you select a genre, title, season, episodes instead of having to start from scratch you can now go back, please note if you've already selected episodes you will have to reselect them again if you use the back button.

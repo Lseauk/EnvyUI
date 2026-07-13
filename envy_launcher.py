@@ -1,5 +1,5 @@
 """
-EnvyUI  v1.0.3
+EnvyUI  v1.0.4
 ==============
 A self-contained Windows launcher for the envied download engine.
 
@@ -16,6 +16,13 @@ import os
 import ctypes
 import sys
 import json
+
+# Tell Windows this process owns the "EnvyUI" identity so the taskbar button
+# shows the EnvyUI icon and "Pin to taskbar" pins EnvyUI rather than pythonw.
+try:
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("TwinVine.EnvyUI")
+except Exception:
+    pass
 
 # Force Chromium software rendering for VM compatibility and to prevent the
 # NVIDIA GeForce Experience overlay from triggering on GPU machines.
@@ -219,7 +226,7 @@ REQUESTS_AVAILABLE = True  # urllib.request is stdlib — always available
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 APP_NAME        = "EnvyUI"
-APP_VERSION     = "1.0.3"
+APP_VERSION     = "1.0.4"
 GITHUB_REPO     = "Lseauk/EnvyUI"
 GITHUB_URL      = f"https://github.com/{GITHUB_REPO}"
 LAUNCHER_URL    = "https://github.com/Lseauk/EnvyUI"
@@ -611,14 +618,26 @@ def _launch_all_powershell(episode_list):
                 w._dl_signals.line.emit(f"─── {label} ───")
 
             env = os.environ.copy()
+            # Clear PyInstaller env vars so uv spawns the real Python,
+            # not the frozen bundle's _MEIPASS temp dir (causes 0xC000007B)
+            env.pop("PYTHONHOME", None)
+            env.pop("PYTHONPATH", None)
+            # Strip _MEIPASS from PATH — PyInstaller injects it so bundled DLLs
+            # are found by child processes, but it causes STATUS_INVALID_IMAGE_FORMAT
+            # (0xC000007B) when external exes like uv.exe load their own DLLs.
+            _meipass = getattr(sys, "_MEIPASS", None)
+            if _meipass:
+                env["PATH"] = ";".join(
+                    p for p in env.get("PATH", "").split(";") if p != _meipass
+                )
             env["PYTHONUNBUFFERED"] = "1"
             env["PYTHONUTF8"]       = "1"
             env["PYTHONIOENCODING"] = "utf-8"
             env["PYTHONWARNINGS"]   = "ignore"
-            env["WT_SESSION"]       = env.get("WT_SESSION") or "EnvyUI"
-            env["FORCE_COLOR"]      = "1"
-            env["COLORTERM"]        = "truecolor"
-            env["TERM"]             = "xterm-256color"
+            env["WT_SESSION"]        = env.get("WT_SESSION") or "EnvyUI"
+            env["FORCE_COLOR"]       = "1"
+            env["COLORTERM"]         = "truecolor"
+            env["TERM"]              = "xterm-256color"
             # Add tools to PATH
             tools_dirs = [
                 str(Path(ep_cwd) / ".venv" / "Scripts"),
@@ -1276,6 +1295,10 @@ def _launch_powershell(command, cwd):
     script_lines = [
         # Extend PATH with all tool locations
         f"$env:PATH = '{path_prepend}' + ';' + $env:PATH",
+        # Clear PyInstaller-injected Python env vars so uv uses the real Python,
+        # not the frozen bundle's _MEIPASS temp dir (causes 0xC000007B otherwise)
+        "Remove-Item Env:PYTHONHOME -ErrorAction SilentlyContinue",
+        "Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue",
         # Suppress Python SyntaxWarnings from third-party packages (e.g. tinycss)
         "$env:PYTHONWARNINGS = 'ignore'",
         "$env:PYTHONUTF8 = '1'",
@@ -11426,10 +11449,13 @@ class EnvyLauncher(QMainWindow):
             f"color:{C['green']};font-size:13px;font-weight:bold;border:none;")
         bf.addWidget(build_hdr)
         build_note = QLabel(
-            "Builds EnvyUI.exe — a convenient alternative to running "
-            "the app via the batch file. Once built, you can place a shortcut to "
-            "the exe on your desktop or taskbar for easy access. "
-            "Output is saved to the dist\\ folder next to the launcher."
+            "Builds EnvyUI.exe — a launcher that uses your existing Python installation "
+            "so downloads behave identically to the batch file. "
+            "Both EnvyUI.exe and EnvyUI.lnk are saved next to envy_launcher.py.\n\n"
+            "• Double-click EnvyUI.exe to launch, or pin it to the Start menu via File Explorer.\n"
+            "• To pin to the taskbar: right-click EnvyUI.lnk → Pin to taskbar "
+            "(the shortcut is required — pinning the exe directly causes two icons to appear).\n"
+            "• Updates only require replacing envy_launcher.py — no need to rebuild the exe."
         )
         build_note.setWordWrap(True)
         build_note.setStyleSheet(f"color:{C['subtext']};font-size:11px;border:none;")
@@ -11600,29 +11626,73 @@ class EnvyLauncher(QMainWindow):
         assets_dir = launcher_dir / "assets"
         icon_path = assets_dir / "icon.ico"
 
+        # Write a tiny launcher script — all it does is find system Python and
+        # run envy_launcher.py with it, exactly like the batch file does.
+        # This means the exe uses the system Python's installed packages
+        # (PyQt6, winpty, etc.) so the download panel works identically to the batch file.
+        launcher_stub = launcher_dir / "_envy_launcher_stub.py"
+        launcher_stub.write_text(
+            "import sys, os, subprocess, pathlib, ctypes\n"
+            "\n"
+            "# Claim the EnvyUI identity before spawning the app so Windows\n"
+            "# associates the taskbar button with EnvyUI.exe, not pythonw.exe.\n"
+            "try:\n"
+            "    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('TwinVine.EnvyUI')\n"
+            "except Exception:\n"
+            "    pass\n"
+            "\n"
+            "def _find_python():\n"
+            "    import shutil\n"
+            "    for name in ['pythonw.exe', 'python.exe']:\n"
+            "        hit = shutil.which(name)\n"
+            "        if hit and os.path.getsize(hit) > 0:\n"
+            "            return hit\n"
+            "    return None\n"
+            "\n"
+            "def _find_script():\n"
+            "    exe_dir = pathlib.Path(sys.executable).parent\n"
+            "    for folder in [exe_dir, exe_dir.parent]:\n"
+            "        candidate = folder / 'envy_launcher.py'\n"
+            "        if candidate.exists():\n"
+            "            return candidate\n"
+            f"    baked = pathlib.Path(r'{launcher_dir}')\n"
+            "    candidate = baked / 'envy_launcher.py'\n"
+            "    if candidate.exists():\n"
+            "        return candidate\n"
+            "    return None\n"
+            "\n"
+            "python = _find_python()\n"
+            "if not python:\n"
+            "    ctypes.windll.user32.MessageBoxW(\n"
+            "        0,\n"
+            "        'Python not found.\\n\\nPlease install Python from https://www.python.org/downloads/\\n'\n"
+            "        'and tick \"Add Python to PATH\" during installation.',\n"
+            "        'EnvyUI', 0x10)\n"
+            "    sys.exit(1)\n"
+            "\n"
+            "script = _find_script()\n"
+            "if not script:\n"
+            "    ctypes.windll.user32.MessageBoxW(\n"
+            "        0,\n"
+            "        'envy_launcher.py not found next to EnvyUI.exe.',\n"
+            "        'EnvyUI', 0x10)\n"
+            "    sys.exit(1)\n"
+            "\n"
+            "os.chdir(str(script.parent))\n"
+            "# Wait for the app to exit so EnvyUI.exe stays alive while the\n"
+            "# app runs — Windows then pins EnvyUI.exe (not pythonw.exe).\n"
+            "proc = subprocess.Popen([python, str(script)], cwd=str(script.parent))\n"
+            "proc.wait()\n",
+            encoding="utf-8"
+        )
+
         build_args = [
             system_python, "-m", "PyInstaller",
             "--noconfirm", "--onefile", "--windowed", "--name", "EnvyUI",
-            "--hidden-import", "PyQt6",
-            "--hidden-import", "PyQt6.QtWidgets",
-            "--hidden-import", "PyQt6.QtCore",
-            "--hidden-import", "PyQt6.QtGui",
-            "--hidden-import", "PyQt6.sip",
-            "--hidden-import", "requests",
-            "--hidden-import", "urllib3",
-            "--hidden-import", "certifi",
-            "--hidden-import", "xmlrpc",
-            "--hidden-import", "xmlrpc.client",
-            "--hidden-import", "xmlrpc.server",
-            "--collect-submodules", "xmlrpc",
-            "--exclude-module", "tkinter",
-            "--exclude-module", "test",
         ]
-        if assets_dir.exists():
-            build_args += ["--add-data", f"{assets_dir};assets"]
         if icon_path.exists():
             build_args += ["--icon", str(icon_path)]
-        build_args.append(str(launcher_py))
+        build_args.append(str(launcher_stub))
 
         class _BuildWorker(QThread):
             log_line   = pyqtSignal(str)
@@ -11655,11 +11725,87 @@ class EnvyLauncher(QMainWindow):
                     self._stream([self._python, "-m", "pip", "install", "pyinstaller"])
                     self.log_line.emit("[build] Starting PyInstaller…")
                     self._stream(self._args)
-                    import os as _os2
-                    exe = _os2.path.join(self._cwd, "dist", "EnvyUI.exe")
-                    if not _os2.path.exists(exe):
+                    import os as _os2, shutil as _sh
+                    exe_built = _os2.path.join(self._cwd, "dist", "EnvyUI.exe")
+                    if not _os2.path.exists(exe_built):
                         raise RuntimeError("Build finished but EnvyUI.exe not found in dist\\")
-                    self.finished_ok.emit(exe)
+                    # Move exe to root folder (next to envy_launcher.py)
+                    exe_dest = _os2.path.join(self._cwd, "EnvyUI.exe")
+                    _sh.move(exe_built, exe_dest)
+                    # Remove PyInstaller artefacts — not needed after build
+                    for _item in ["dist", "build", "EnvyUI.spec", "_envy_launcher_stub.py"]:
+                        _p = _os2.path.join(self._cwd, _item)
+                        try:
+                            if _os2.path.isdir(_p):
+                                _sh.rmtree(_p)
+                            elif _os2.path.isfile(_p):
+                                _os2.remove(_p)
+                        except Exception:
+                            pass
+                    # Create EnvyUI.lnk with AppUserModelID embedded so pinning
+                    # the shortcut merges the running window into one taskbar button.
+                    lnk_dest = _os2.path.join(self._cwd, "EnvyUI.lnk")
+                    try:
+                        import ctypes as _ct, struct as _st, uuid as _uu
+                        _ole32   = _ct.windll.ole32
+                        _shell32 = _ct.windll.shell32
+                        _ole32.CoInitialize(None)
+
+                        def _gb(s):
+                            return (_ct.c_byte * 16)(*_uu.UUID(s).bytes_le)
+
+                        # ── create IShellLinkW ──
+                        _clsid = _gb("{00021401-0000-0000-C000-000000000046}")
+                        _iid_sl = _gb("{000214F9-0000-0000-C000-000000000046}")
+                        _pSL = _ct.c_void_p()
+                        _ole32.CoCreateInstance(
+                            _ct.byref(_clsid), None, 1,
+                            _ct.byref(_iid_sl), _ct.byref(_pSL))
+                        _vSL = _ct.cast(_pSL, _ct.POINTER(_ct.POINTER(_ct.c_void_p)))[0]
+                        _WF = _ct.WINFUNCTYPE
+                        _HR = _ct.HRESULT
+                        _VP = _ct.c_void_p
+                        _WS = _ct.c_wchar_p
+                        _WF(_HR,_VP,_WS)(_vSL[20])(  _pSL, exe_dest)      # SetPath
+                        _WF(_HR,_VP,_WS)(_vSL[9]) (  _pSL, self._cwd)     # SetWorkingDirectory
+                        _WF(_HR,_VP,_WS)(_vSL[7]) (  _pSL, "EnvyUI")      # SetDescription
+                        _WF(_HR,_VP,_WS,_ct.c_int)(_vSL[17])(_pSL, exe_dest, 0)  # SetIconLocation
+                        # QI for IPersistFile and Save
+                        _iid_pf = _gb("{0000010B-0000-0000-C000-000000000046}")
+                        _pPF = _ct.c_void_p()
+                        _WF(_HR,_VP,_VP,_ct.POINTER(_VP))(_vSL[0])(_pSL, _ct.byref(_iid_pf), _ct.byref(_pPF))
+                        _vPF = _ct.cast(_pPF, _ct.POINTER(_ct.POINTER(_ct.c_void_p)))[0]
+                        _WF(_HR,_VP,_WS,_ct.c_bool)(_vPF[6])(_pPF, lnk_dest, True)  # Save
+                        _WF(_HR,_VP)(_vPF[2])(_pPF)   # Release IPersistFile
+                        _WF(_HR,_VP)(_vSL[2])(_pSL)   # Release IShellLinkW
+
+                        # ── set AppUserModelID on the saved .lnk ──
+                        _iid_ps = _gb("{886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99}")
+                        _pPS = _ct.c_void_p()
+                        _shell32.SHGetPropertyStoreFromParsingName.restype  = _ct.HRESULT
+                        _shell32.SHGetPropertyStoreFromParsingName.argtypes = [
+                            _ct.c_wchar_p, _ct.c_void_p, _ct.c_uint,
+                            _ct.c_void_p, _ct.POINTER(_ct.c_void_p)]
+                        _shell32.SHGetPropertyStoreFromParsingName(
+                            lnk_dest, None, 2,
+                            _ct.byref(_iid_ps), _ct.byref(_pPS))
+                        if _pPS:
+                            _vPS = _ct.cast(_pPS, _ct.POINTER(_ct.POINTER(_ct.c_void_p)))[0]
+                            # PROPERTYKEY: {9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}, pid=5
+                            _pk = (_ct.c_byte*20)(
+                                *_uu.UUID("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3").bytes_le
+                                + _st.pack("<I", 5))
+                            _aumid_buf = _ct.create_unicode_buffer("TwinVine.EnvyUI")
+                            # PROPVARIANT: vt=VT_LPWSTR(31), 6 pad bytes, pointer
+                            _pv = (_ct.c_byte*16)(
+                                *_st.pack("<H6sQ", 31, b'\x00'*6,
+                                          _ct.addressof(_aumid_buf)))
+                            _WF(_HR,_VP,_VP,_VP)(_vPS[6])(_pPS, _ct.byref(_pk), _ct.byref(_pv))
+                            _WF(_HR,_VP)(_vPS[7])(_pPS)   # Commit
+                            _WF(_HR,_VP)(_vPS[2])(_pPS)   # Release
+                    except Exception:
+                        pass
+                    self.finished_ok.emit(exe_dest)
                 except Exception as e:
                     self.finished_err.emit(str(e))
 
@@ -11667,7 +11813,9 @@ class EnvyLauncher(QMainWindow):
         self._build_worker.log_line.connect(self._append_log)
         self._build_worker.finished_ok.connect(lambda exe: (
             self._build_status.setStyleSheet(f"color:{C['green']};font-size:11px;border:none;"),
-            self._build_status.setText(f"✓  Build complete: {exe}"),
+            self._build_status.setText(
+                f"✓  Done — EnvyUI.exe + EnvyUI.lnk saved to: {Path(exe).parent}  "
+                "│  To pin: unpin the old exe, then right-click EnvyUI.lnk → Pin to taskbar"),
             self._build_btn.setEnabled(True),
         ))
         self._build_worker.finished_err.connect(lambda msg: (
@@ -12062,12 +12210,15 @@ Batch mode lets you queue episodes from multiple shows before downloading them a
 
 ## Build EXE
 
-The **Build EXE** button on the Install / Update page packages EnvyUI into a standalone `.exe` file using PyInstaller. Once built you can create a desktop shortcut to the exe and launch EnvyUI without needing the batch file.
+The **Build EXE** button on the Install / Update page creates `EnvyUI.exe` — a small launcher that finds your existing Python installation and runs `envy_launcher.py` with it. Because it uses the same Python and packages as the batch file, downloads behave identically.
 
-- The exe is saved to the same folder as `envy_launcher.py`
-- Building takes a minute or two — the Log tab shows progress
-- After updating EnvyUI to a new version, click Build EXE again to rebuild the exe. Any existing shortcuts will continue to point to the same file location and will not need to be updated.
-- The exe still requires your system Python and the EnvyCore environment — it is a launcher shortcut, not a fully self-contained package
+Both `EnvyUI.exe` and `EnvyUI.lnk` are saved to the same folder as `envy_launcher.py`. Building takes a minute or two — the Log tab shows progress.
+
+**How to use the output:**
+
+- **Launch / desktop shortcut** — double-click `EnvyUI.exe`, or right-click it in File Explorer → *Pin to Start*.
+- **Taskbar pin** — right-click `EnvyUI.lnk` → *Pin to taskbar*. You must use the shortcut file for this; pinning the exe directly causes two icons to appear when the app is running.
+- **Updates** — most updates only require replacing `envy_launcher.py`. The exe and shortcut do not need to be rebuilt unless specifically noted in the release notes.
 
 ---
 
@@ -12163,7 +12314,7 @@ EnvyUI updates are distributed as zip files on the GitHub releases page. When a 
 2. Close the app.
 3. Download the new zip from the GitHub releases page and extract it over your existing EnvyUI folder. Your envied.yaml, cookies, and CDM files are not included in the zip so they will not be overwritten.
 4. Reopen the app and click **Install EnvyUI Tools** to update the Python environment.
-5. If you were using a shortcut to an EXE file, click **Build EXE** on the Install / Update page to rebuild it — existing shortcuts will continue to work without being removed.
+5. If you are using `EnvyUI.exe`, most updates only require replacing `envy_launcher.py` — no need to rebuild the exe unless the release notes say otherwise.
 
         """
         # ─────────────────────────────────────────────────────────────────────
