@@ -1,5 +1,5 @@
 """
-EnvyUI  v1.0.2
+EnvyUI  v1.0.3
 ==============
 A self-contained Windows launcher for the envied download engine.
 
@@ -219,7 +219,7 @@ REQUESTS_AVAILABLE = True  # urllib.request is stdlib — always available
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 APP_NAME        = "EnvyUI"
-APP_VERSION     = "1.0.2"
+APP_VERSION     = "1.0.3"
 GITHUB_REPO     = "Lseauk/EnvyUI"
 GITHUB_URL      = f"https://github.com/{GITHUB_REPO}"
 LAUNCHER_URL    = "https://github.com/Lseauk/EnvyUI"
@@ -2667,6 +2667,8 @@ class CategoryWorker(QThread):
                 cats = self._seven()
             elif svc == "TEN":
                 cats = self._ten()
+            elif svc == "RTE":
+                cats = self._rte()
             elif svc == "SBS":
                 cats = self._sbs()
             elif svc == "SBS:tv":
@@ -2825,6 +2827,7 @@ class CategoryWorker(QThread):
     def _tvnz(self) -> list:
         # TVNZ edge API category URLs
         return [
+            {"name": "Movies",              "id": "https://www.tvnz.co.nz/movies"},
             {"name": "Drama",               "id": "https://apis-edge-prod.tech.tvnz.co.nz/api/v1/web/play/page/categories/drama"},
             {"name": "Home and Living",     "id": "https://apis-edge-prod.tech.tvnz.co.nz/api/v1/web/play/page/categories/home-and-living"},
             {"name": "Sport Documentaries", "id": "https://apis-edge-prod.tech.tvnz.co.nz/api/v1/web/play/page/categories/sport-documentaries"},
@@ -3238,6 +3241,17 @@ class CategoryWorker(QThread):
             {"name": "Adventure",          "id": "ten-genre:adventure"},
         ]
 
+    def _rte(self) -> list:
+        data = self._fetch_json(
+            "https://feed.entertainment.tv.theplatform.eu/f/1uC-gC/rte-prd-prd-categories"
+            "?range=1-100&schema=2.15&form=json"
+        )
+        return [
+            {"name": e.get("title", ""), "id": e.get("title", "")}
+            for e in (data.get("entries") or [])
+            if e.get("title")
+        ]
+
     def _sbs(self) -> list:
         return [
             {"name": "TV Shows", "id": "SBS:tv"},
@@ -3365,6 +3379,8 @@ class CategoryShowsWorker(QThread):
                 shows = self._ten()
             elif svc == "SBS":
                 shows = self._sbs()
+            elif svc == "RTE":
+                shows = self._rte()
             else:
                 self.error.emit(f"Category shows not available for {svc}.")
                 return
@@ -3600,55 +3616,69 @@ class CategoryShowsWorker(QThread):
         return shows
 
     def _tvnz(self) -> list:
-        # The TVNZ category edge API requires authentication that we don't have
-        # at browse time — derive a search term from the category URL slug and
-        # use the unauthenticated search API instead.
+        # The TVNZ category edge API is unavailable unauthenticated — derive a
+        # search term from the category URL slug and use the search API instead.
         import urllib.parse as _up
         path = _up.urlparse(self._id).path.rstrip("/")
         slug = path.split("/")[-1]
-        term = slug.replace("-", " ").replace("_", " ").strip()
+
+        # Movies use cty=="movie" and a different URL pattern
+        is_movies = (slug == "movies")
+        cty_filter = "movie" if is_movies else "tvseries"
+        term = "movie" if is_movies else slug.replace("-", " ").replace("_", " ").strip()
         if not term:
             return []
 
-        params = _up.urlencode({
-            "mode": "detail",
-            "st": "published",
-            "term": term,
-            "pageNumber": "1",
-            "pageSize": "50",
-            "reg": "nz",
-            "dt": "androidtv",
-            "client": "tvnz-tvnz-androidtv",
-            "pf": "Regular",
-            "allowpg": "true",
-        })
-        data = self._fetch_json(
-            f"https://search-cdn.cms-api.tvnz.co.nz/content/search?{params}",
-            {
-                "x-device-type": "androidtv",
-                "x-app-store-type": "androidtv",
-                "x-client-id": "tvnz-tvnz-androidtv",
-                "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 11; Android TV Build/RTMA.250416.082)",
-            },
-        )
-        if data.get("header", {}).get("message", "").lower() != "success":
-            return []
+        HDRS = {
+            "x-device-type": "androidtv",
+            "x-app-store-type": "androidtv",
+            "x-client-id": "tvnz-tvnz-androidtv",
+            "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 11; Android TV Build/RTMA.250416.082)",
+        }
         shows = []
-        for item in (data.get("data") or []):
-            if not isinstance(item, dict):
-                continue
-            cty      = item.get("cty", "")
-            nu       = item.get("nu", "")
-            title    = (item.get("lon") or [{"n": ""}])[0].get("n", "")
-            synopsis = (item.get("losd") or [{"n": ""}])[0].get("n", "")
-            if not title or not nu or not cty:
-                continue
-            shows.append({
-                "title":    title,
-                "synopsis": synopsis,
-                "url":      f"https://tvnz.co.nz/{cty}/{nu}",
+        seen = set()
+        for page in range(1, 20):
+            params = _up.urlencode({
+                "mode": "detail",
+                "st": "published",
+                "term": term,
+                "pageNumber": str(page),
+                "pageSize": "50",
+                "reg": "nz",
+                "dt": "androidtv",
+                "client": "tvnz-tvnz-androidtv",
+                "pf": "Regular",
+                "allowpg": "true",
             })
-        return shows
+            data = self._fetch_json(
+                f"https://search-cdn.cms-api.tvnz.co.nz/content/search?{params}", HDRS)
+            if data.get("header", {}).get("message", "").lower() != "success":
+                break
+            items = data.get("data") or []
+            if not items:
+                break
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("cty") != cty_filter:
+                    continue
+                nu    = item.get("nu", "")
+                title = (item.get("lon") or [{"n": ""}])[0].get("n", "")
+                synopsis = (item.get("losd") or [{"n": ""}])[0].get("n", "")
+                if not title or not nu or nu in seen:
+                    continue
+                seen.add(nu)
+                url_base = "movies" if is_movies else "tvseries"
+                shows.append({
+                    "title":    title,
+                    "synopsis": synopsis,
+                    "url":      f"https://tvnz.co.nz/{url_base}/{nu}",
+                })
+            hdr = data.get("header", {})
+            total = hdr.get("count", 0)
+            if page * 50 >= total:
+                break
+        return sorted(shows, key=lambda s: s["title"])
 
     def _pluto(self) -> list:
         import uuid as _uuid, urllib.parse as _up
@@ -4460,17 +4490,98 @@ class CategoryShowsWorker(QThread):
         return sorted(shows, key=lambda s: s["title"])
 
     def _ten(self) -> list:
-        import urllib.request as _ur
+        import urllib.request as _ur, urllib.parse as _up, json as _json
         genre_slug = self._id.split(":", 1)[1] if ":" in self._id else self._id
-        HDRS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,*/*"}
+        UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36"
+        HDRS = {"User-Agent": UA, "Accept": "text/html,application/xhtml+xml,*/*"}
         req = _ur.Request(f"https://10.com.au/shows/{genre_slug}", headers=HDRS)
         with _ur.urlopen(req, timeout=20) as r:
             html = r.read().decode("utf-8", errors="replace")
         data = SearchWorker._ten_brace_extract(html, 'const showsPageData = ')
         if not data:
             return []
-        return sorted(SearchWorker._ten_shows_from_data(data), key=lambda s: s["title"])
+        shows = []
+        seen_urls = set()
+        loaded_ids = []
+        for show in (data.get("shows") or []):
+            name = show.get("name") or show.get("title") or ""
+            show_url = show.get("url") or ""
+            if name and show_url and show_url not in seen_urls:
+                seen_urls.add(show_url)
+                shows.append({"title": name, "synopsis": show.get("abstractShowDescription") or "", "url": show_url})
+                if show.get("id"):
+                    loaded_ids.append(str(show["id"]))
+        genre_id = (data.get("selectedGenre") or {}).get("id")
+        sort = data.get("sort") or "title"
+        sort_dir = data.get("sortDirection") or "asc"
+        if data.get("hasMore") and genre_id:
+            API_HDRS = {"User-Agent": UA, "Accept": "application/json",
+                        "X-Requested-With": "XMLHttpRequest",
+                        "Referer": f"https://10.com.au/shows/{genre_slug}"}
+            for _ in range(50):
+                qs = _up.urlencode({
+                    "skipIdList": ",".join(loaded_ids),
+                    "genreId": genre_id,
+                    "sort": sort,
+                    "sortDirection": sort_dir,
+                })
+                try:
+                    req2 = _ur.Request(f"https://10.com.au/api/shows?{qs}", headers=API_HDRS)
+                    with _ur.urlopen(req2, timeout=15) as r2:
+                        page = _json.loads(r2.read().decode("utf-8", errors="replace"))
+                except Exception:
+                    break
+                page_shows = page.get("items") or []
+                if not page_shows:
+                    break
+                for show in page_shows:
+                    name = show.get("name") or show.get("title") or ""
+                    show_url = show.get("url") or ""
+                    if name and show_url and show_url not in seen_urls:
+                        seen_urls.add(show_url)
+                        shows.append({"title": name, "synopsis": show.get("abstractShowDescription") or "", "url": show_url})
+                    if show.get("id"):
+                        loaded_ids.append(str(show["id"]))
+                if not page.get("hasMore"):
+                    break
+        return sorted(shows, key=lambda s: s["title"])
+
+    def _rte(self) -> list:
+        import urllib.parse as _up, re as _re
+        tag = self._id  # category title e.g. "Drama", "Film"
+        BASE = "https://feed.entertainment.tv.theplatform.eu/f/1uC-gC/rte-prd-prd-search"
+        shows = []
+        seen = set()
+        start = 1
+        page_size = 50
+        while True:
+            qs = _up.urlencode({
+                "byProgramType": "Series|Movie",
+                "byTags": tag,
+                "range": f"{start}-{start + page_size - 1}",
+                "schema": "2.15",
+                "omitInvalidFields": "true",
+            })
+            data = self._fetch_json(f"{BASE}?{qs}")
+            entries = data.get("entries") or []
+            if not entries:
+                break
+            for e in entries:
+                title = e.get("title") or e.get("plprogram$longTitle") or ""
+                guid  = e.get("guid") or ""
+                prog_type = e.get("plprogram$programType") or "Series"
+                synopsis  = e.get("plprogram$shortDescription") or e.get("description") or ""
+                if not title or not guid or guid in seen:
+                    continue
+                seen.add(guid)
+                slug = _re.sub(r"^-|-$", "", _re.sub(r"\W+", "-", title.lower()))
+                url  = f"https://www.rte.ie/player/{prog_type}/{slug}/{guid}"
+                shows.append({"title": title, "synopsis": synopsis, "url": url,
+                               "_rte_guid": guid, "_rte_type": prog_type})
+            if len(entries) < page_size:
+                break
+            start += page_size
+        return sorted(shows, key=lambda s: s["title"])
 
     def _sbs(self) -> list:
         import urllib.request as _ur, json as _json
@@ -7939,7 +8050,7 @@ class EnvyLauncher(QMainWindow):
         sidebar.setFixedWidth(230)
         sidebar.setStyleSheet(f"background:{C['surface']};border-right:1px solid {C['border']};")
         sb_layout = QVBoxLayout(sidebar)
-        sb_layout.setContentsMargins(0, 0, 1, 0)
+        sb_layout.setContentsMargins(0, 0, 0, 0)
         sb_layout.setSpacing(0)
 
         # Logo
@@ -7989,7 +8100,7 @@ class EnvyLauncher(QMainWindow):
         sb_layout.addWidget(line_meta)
 
         meta_frame = QFrame()
-        meta_frame.setStyleSheet(f"background:{C['surface']};border:none;")
+        meta_frame.setStyleSheet("background:transparent;border:none;")
         meta_outer = QVBoxLayout(meta_frame)
         meta_outer.setContentsMargins(10, 6, 10, 6)
         meta_outer.setSpacing(3)
@@ -8025,7 +8136,7 @@ class EnvyLauncher(QMainWindow):
         sb_layout.addWidget(line_b)
 
         batch_sb = QFrame()
-        batch_sb.setStyleSheet(f"background:{C['surface']};border:none;")
+        batch_sb.setStyleSheet("background:transparent;border:none;")
         batch_sb_layout = QVBoxLayout(batch_sb)
         batch_sb_layout.setContentsMargins(10, 8, 9, 8)
         batch_sb_layout.setSpacing(4)
@@ -8271,13 +8382,21 @@ class EnvyLauncher(QMainWindow):
         self._sel_scroll.setWidget(self._sel_list_widget)
         sel_layout.addWidget(self._sel_scroll)
 
-        # Confirm/Cancel buttons
+        # Confirm/Cancel/Back buttons
         sel_btn_row = QHBoxLayout()
         self._sel_confirm_btn = QPushButton("✓  Confirm")
         self._sel_confirm_btn.setStyleSheet(
             f"background:{C['green']};color:{C['bg']};font-weight:bold;"
             f"border:none;padding:6px 18px;border-radius:3px;")
         sel_btn_row.addWidget(self._sel_confirm_btn)
+        self._sel_back_btn = QPushButton("←  Back")
+        self._sel_back_btn.setStyleSheet(
+            f"background:{C['overlay']};color:{C['text']};"
+            f"border:none;padding:6px 18px;border-radius:3px;")
+        self._sel_back_btn.setVisible(False)
+        self._back_action = None  # set by each navigation stage
+        self._sel_back_btn.clicked.connect(self._on_back_btn_clicked)
+        sel_btn_row.addWidget(self._sel_back_btn)
         self._sel_cancel_btn = QPushButton("✕  Cancel")
         self._sel_cancel_btn.setStyleSheet(
             f"background:{C['overlay']};color:{C['text']};"
@@ -9328,6 +9447,7 @@ class EnvyLauncher(QMainWindow):
 
     def _show_category_list(self, service_name: str, categories: list):
         """Show category radio-button list in _sel_panel."""
+        self._last_categories = (service_name, categories)
         self._dl_status.setText(
             f"✅ {len(categories)} categories — select one to browse")
         self._dl_status.setStyleSheet(
@@ -9400,6 +9520,8 @@ class EnvyLauncher(QMainWindow):
             pass
         self._sel_confirm_btn.clicked.connect(_confirm)
         self._sel_cancel_btn.clicked.connect(_cancel)
+        self._back_action = None
+        self._sel_back_btn.setVisible(False)
         panel.setVisible(True)
         panel.raise_()
 
@@ -9559,6 +9681,7 @@ class EnvyLauncher(QMainWindow):
     def _show_search_results(self, service_name: str, results: list,
                               total_count: int = 0, category_name: str = ""):
         """Populate _sel_panel with search results as radio buttons."""
+        self._last_search_results = (service_name, results, total_count, category_name)
         svc_label = self._svc_display(service_name)
         if total_count and total_count > len(results):
             count_str = f"top {len(results):,} of {total_count:,}"
@@ -9640,6 +9763,13 @@ class EnvyLauncher(QMainWindow):
             pass
         self._sel_confirm_btn.clicked.connect(_confirm)
         self._sel_cancel_btn.clicked.connect(_cancel)
+        lc = getattr(self, "_last_categories", None)
+        if category_name and lc:
+            self._back_action = lambda: self._show_category_list(lc[0], lc[1])
+            self._sel_back_btn.setVisible(True)
+        else:
+            self._back_action = None
+            self._sel_back_btn.setVisible(False)
         panel.setVisible(True)
         panel.raise_()
 
@@ -9723,14 +9853,18 @@ class EnvyLauncher(QMainWindow):
 
     def _show_series_selection(self, service_name: str, all_episodes: list):
         """If multiple series, let user pick which ones; then show episodes."""
+        self._last_all_episodes = (service_name, all_episodes)
         series_groups = {}
         for ep in all_episodes:
             s_no = ep.get("series_no", "0")
             series_groups.setdefault(s_no, []).append(ep)
 
         if len(series_groups) <= 1:
+            self._series_selector_was_shown = False
             self._show_episode_selection(service_name, all_episodes)
             return
+
+        self._series_selector_was_shown = True
 
         series_list = sorted(series_groups.keys(),
                              key=lambda x: int(x) if x.isdigit() else 0)
@@ -9826,8 +9960,18 @@ class EnvyLauncher(QMainWindow):
             pass
         self._sel_confirm_btn.clicked.connect(_confirm)
         self._sel_cancel_btn.clicked.connect(_cancel)
+        last_sr = getattr(self, "_last_search_results", None)
+        if last_sr:
+            self._back_action = lambda: self._show_search_results(*last_sr)
+        else:
+            self._back_action = None
+        self._sel_back_btn.setVisible(self._back_action is not None)
         panel.setVisible(True)
         panel.raise_()
+
+    def _on_back_btn_clicked(self):
+        if callable(self._back_action):
+            self._back_action()
 
     def _reset_status(self):
         """Reset the status bar back to the idle/ready state."""
@@ -9967,6 +10111,16 @@ class EnvyLauncher(QMainWindow):
             pass
         self._sel_confirm_btn.clicked.connect(_confirm)
         self._sel_cancel_btn.clicked.connect(_cancel)
+
+        # Back: go to season selector if it was shown, else go to show list
+        last_ae = getattr(self, "_last_all_episodes", None)
+        if getattr(self, "_series_selector_was_shown", False) and last_ae and last_ae[0] == service_name:
+            _ae_snapshot = last_ae[1]
+            self._back_action = lambda: self._show_series_selection(service_name, _ae_snapshot)
+        else:
+            last_sr = getattr(self, "_last_search_results", None)
+            self._back_action = (lambda lsr=last_sr: self._show_search_results(*lsr)) if last_sr else None
+        self._sel_back_btn.setVisible(True)
         panel.setVisible(True)
         panel.raise_()
 
@@ -11431,13 +11585,9 @@ class EnvyLauncher(QMainWindow):
         import subprocess as _sp
         import sys as _sys
         import os as _os
-        import threading as _th
 
-        # PyInstaller must run from the same Python that has PyQt6 — that is
-        # the system Python running this script, NOT the EnvyCore venv Python.
         system_python = _sys.executable
         if getattr(_sys, "frozen", False):
-            # If already running as a built exe, there is no .py to rebuild from.
             launcher_py = Path(_sys.executable).parent / "envy_launcher.py"
             if not launcher_py.exists():
                 QMessageBox.warning(self, APP_NAME,
@@ -11450,78 +11600,85 @@ class EnvyLauncher(QMainWindow):
         assets_dir = launcher_dir / "assets"
         icon_path = assets_dir / "icon.ico"
 
+        build_args = [
+            system_python, "-m", "PyInstaller",
+            "--noconfirm", "--onefile", "--windowed", "--name", "EnvyUI",
+            "--hidden-import", "PyQt6",
+            "--hidden-import", "PyQt6.QtWidgets",
+            "--hidden-import", "PyQt6.QtCore",
+            "--hidden-import", "PyQt6.QtGui",
+            "--hidden-import", "PyQt6.sip",
+            "--hidden-import", "requests",
+            "--hidden-import", "urllib3",
+            "--hidden-import", "certifi",
+            "--hidden-import", "xmlrpc",
+            "--hidden-import", "xmlrpc.client",
+            "--hidden-import", "xmlrpc.server",
+            "--collect-submodules", "xmlrpc",
+            "--exclude-module", "tkinter",
+            "--exclude-module", "test",
+        ]
+        if assets_dir.exists():
+            build_args += ["--add-data", f"{assets_dir};assets"]
+        if icon_path.exists():
+            build_args += ["--icon", str(icon_path)]
+        build_args.append(str(launcher_py))
+
+        class _BuildWorker(QThread):
+            log_line   = pyqtSignal(str)
+            finished_ok = pyqtSignal(str)   # exe path
+            finished_err = pyqtSignal(str)  # error message
+
+            def __init__(self, python, launcher_dir, build_args):
+                super().__init__()
+                self._python = python
+                self._cwd    = str(launcher_dir)
+                self._args   = build_args
+
+            def _stream(self, cmd):
+                """Run cmd, stream stdout+stderr line by line, raise on non-zero exit."""
+                cf = _sp.CREATE_NO_WINDOW
+                proc = _sp.Popen(
+                    cmd, stdout=_sp.PIPE, stderr=_sp.STDOUT,
+                    text=True, cwd=self._cwd, creationflags=cf)
+                for line in proc.stdout:
+                    line = line.rstrip("\r\n")
+                    if line:
+                        self.log_line.emit(line)
+                proc.wait()
+                if proc.returncode != 0:
+                    raise RuntimeError(f"Process exited with code {proc.returncode}")
+
+            def run(self):
+                try:
+                    self.log_line.emit("[build] Installing PyInstaller…")
+                    self._stream([self._python, "-m", "pip", "install", "pyinstaller"])
+                    self.log_line.emit("[build] Starting PyInstaller…")
+                    self._stream(self._args)
+                    import os as _os2
+                    exe = _os2.path.join(self._cwd, "dist", "EnvyUI.exe")
+                    if not _os2.path.exists(exe):
+                        raise RuntimeError("Build finished but EnvyUI.exe not found in dist\\")
+                    self.finished_ok.emit(exe)
+                except Exception as e:
+                    self.finished_err.emit(str(e))
+
+        self._build_worker = _BuildWorker(system_python, launcher_dir, build_args)
+        self._build_worker.log_line.connect(self._append_log)
+        self._build_worker.finished_ok.connect(lambda exe: (
+            self._build_status.setStyleSheet(f"color:{C['green']};font-size:11px;border:none;"),
+            self._build_status.setText(f"✓  Build complete: {exe}"),
+            self._build_btn.setEnabled(True),
+        ))
+        self._build_worker.finished_err.connect(lambda msg: (
+            self._build_status.setStyleSheet(f"color:{C['red']};font-size:11px;border:none;"),
+            self._build_status.setText(f"✗  {msg}"),
+            self._build_btn.setEnabled(True),
+        ))
         self._build_btn.setEnabled(False)
         self._build_status.setStyleSheet(f"color:{C['yellow']};font-size:11px;border:none;")
-        self._build_status.setText("⏳  Installing PyInstaller…")
-        QApplication.processEvents()
-
-        def _run_build():
-            try:
-                cf = dict(creationflags=_sp.CREATE_NO_WINDOW)
-
-                # Step 1 — install PyInstaller into the system Python (which has PyQt6)
-                r = _sp.run(
-                    [system_python, "-m", "pip", "install", "--quiet", "pyinstaller"],
-                    capture_output=True, text=True, cwd=str(launcher_dir), **cf)
-                if r.returncode != 0:
-                    raise RuntimeError(f"PyInstaller install failed:\n{r.stderr}")
-
-                self._build_status.setText("⏳  Building EXE…")
-                QApplication.processEvents()
-
-                # Step 2 — build args (no spec file needed)
-                build_args = [
-                    system_python, "-m", "PyInstaller",
-                    "--noconfirm",
-                    "--onefile",
-                    "--windowed",
-                    "--name", "EnvyUI",
-                    "--hidden-import", "PyQt6",
-                    "--hidden-import", "PyQt6.QtWidgets",
-                    "--hidden-import", "PyQt6.QtCore",
-                    "--hidden-import", "PyQt6.QtGui",
-                    "--hidden-import", "PyQt6.sip",
-                    "--hidden-import", "requests",
-                    "--hidden-import", "urllib3",
-                    "--hidden-import", "certifi",
-                    "--hidden-import", "xmlrpc",
-                    "--hidden-import", "xmlrpc.client",
-                    "--hidden-import", "xmlrpc.server",
-                    "--hidden-import", "defusedxml",
-                    "--hidden-import", "defusedxml.xmlrpc",
-                    "--collect-submodules", "xmlrpc",
-                    "--exclude-module", "tkinter",
-                    "--exclude-module", "test",
-                ]
-                if assets_dir.exists():
-                    build_args += ["--add-data", f"{assets_dir};assets"]
-                if icon_path.exists():
-                    build_args += ["--icon", str(icon_path)]
-                build_args.append(str(launcher_py))
-
-                r2 = _sp.run(
-                    build_args, capture_output=True, text=True,
-                    cwd=str(launcher_dir), **cf)
-                if r2.returncode != 0:
-                    raise RuntimeError(f"PyInstaller build failed:\n{r2.stderr[-2000:]}")
-
-                exe_path = launcher_dir / "dist" / "EnvyUI.exe"
-                if exe_path.exists():
-                    self._build_status.setStyleSheet(
-                        f"color:{C['green']};font-size:11px;border:none;")
-                    self._build_status.setText(
-                        f"✓  Build complete: {exe_path}")
-                else:
-                    raise RuntimeError("Build finished but EXE not found in dist\\")
-
-            except Exception as e:
-                self._build_status.setStyleSheet(
-                    f"color:{C['red']};font-size:11px;border:none;")
-                self._build_status.setText(f"✗  {e}")
-            finally:
-                self._build_btn.setEnabled(True)
-
-        _th.Thread(target=_run_build, daemon=True).start()
+        self._build_status.setText("⏳  Building…  (see Log page for output)")
+        self._build_worker.start()
 
     def _browse_dir(self):
         d = QFileDialog.getExistingDirectory(self, "Choose install directory",
@@ -11926,19 +12083,20 @@ You may occasionally see retry errors like `Retrying ... IMDBApi` in the downloa
 
 TMDB is the most comprehensive metadata source and is free to use.
 
-1. Create a free account at [themoviedb.org](https://www.themoviedb.org)
+1. Create a free account at <a href="https://www.themoviedb.org">themoviedb.org</a>
 2. Go to **Settings → API** and request an API key (choose Developer)
 3. Copy your **API Read Access Token** (the long one) — or the shorter **API Key (v3)**
-4. Open `envied.yaml` inside **EnvyCore / packages / envied / src / envied /**
-5. Find the line `tmdb_api_key: ""` and add your key between the quotes
+4. Open envied.yaml inside **EnvyCore / packages / envied / src / envied /**
+5. Find the line tmdb_api_key: "" and add your key between the quotes
 
 **Adding an OMDb API key (optional fallback)**
 
 OMDb is a secondary fallback backed by IMDb data. The free tier allows 1,000 requests per day.
 
-1. Register for a free key at [omdbapi.com/apikey.aspx](https://www.omdbapi.com/apikey.aspx)
+1. Register for a free key at <a href="https://www.omdbapi.com/apikey.aspx">omdbapi.com/apikey.aspx</a>
 2. Activate the key from the confirmation email
-3. Open `envied.yaml` and find the line `omdb_api_key: ""` and add your key between the quotes
+3. Open envied.yaml and find the line omdb_api_key: "" and add your key between the quotes
+4. If you're uprgading the app and don't have the line omdb_api_key: "" in your envied yaml file then you will need to add it just below tmdb_api_key: "" line .
 
 **Provider priority order**
 
@@ -11947,7 +12105,7 @@ EnvyUI tries providers in this order, skipping any that are unavailable:
 1. **IMDBApi** — free, no key needed, but may be down occasionally
 2. **TMDB** — requires a free API key, most reliable
 3. **OMDb** — requires a free API key, good fallback
-4. **SIMKL** — requires a free client ID, niche/anime focus
+4. **SIMKL** — requires a free client ID, niche/anime focus (If you don't have SIMKL in your envied yaml file just add this line simkl_client_id: "" below omdb_api_key: "" 
 
 The coloured dots in the sidebar show which providers are currently active (green = available, red = unavailable or no key).
 

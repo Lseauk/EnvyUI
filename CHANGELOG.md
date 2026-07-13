@@ -1,5 +1,18 @@
 # EnvyUI Changelog
 
+**EnvyUI v1.0.3**
+
+-- **Added Back Button** When using Browse by Category and you select a genre, title, season, episodes instead of having to start from scratch you can now go back, please note if you've already selected episodes you will have to reselect them again if you use the back button.
+
+-- **Browse by Category Service Updates** TVNZ, 10Play should now return correct results numbers, also added RTE Browse by Category option.
+
+-- **UI Improvements** Minor changes to the look and feel of the app.
+
+-- **Help Page** Updates to the help page.
+
+-- **Build Exe** Now shows the on the log page what is happening and any errors if any happen.
+
+
 **EnvyUI v1.0.2**
 
 -- **Service Buttons** Changed the main service button to 4 rows instead of three allowing for 28 services.
