@@ -1,5 +1,5 @@
 """
-EnvyUI  v1.0.4
+EnvyUI  v1.0.5
 ==============
 A self-contained Windows launcher for the envied download engine.
 
@@ -226,7 +226,7 @@ REQUESTS_AVAILABLE = True  # urllib.request is stdlib — always available
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 APP_NAME        = "EnvyUI"
-APP_VERSION     = "1.0.4"
+APP_VERSION     = "1.0.5"
 GITHUB_REPO     = "Lseauk/EnvyUI"
 GITHUB_URL      = f"https://github.com/{GITHUB_REPO}"
 LAUNCHER_URL    = "https://github.com/Lseauk/EnvyUI"
@@ -6766,13 +6766,7 @@ class _ProviderCheckThread(QThread):
                     if m:
                         simkl_key = m.group(1)
 
-            # Ping imdbapi.dev
-            imdb_ok = False
-            try:
-                with _ur.urlopen("https://api.imdbapi.dev/search/titles?query=test&limit=1", timeout=4) as r:
-                    imdb_ok = r.status < 500
-            except Exception:
-                imdb_ok = False
+            imdb_ok = True  # api.tiffara.com is free with no key required
 
             parts = [
                 f"IMDBApi:{1 if imdb_ok else 0}",
@@ -7798,69 +7792,6 @@ class InstallWorker(QThread):
             except Exception as _pbs_e:
                 self._log(f"Note: could not patch PBS/__init__.py: {_pbs_e}")
 
-            # ── Patch providers/imdbapi.py: add session-level connectivity check ──
-            # imdbapi.dev goes down periodically. Without this patch is_available()
-            # always returns True, causing 3 retry errors per download while it waits.
-            # The patch adds a one-time ping at startup that caches the result for
-            # the session, so dead providers are skipped immediately.
-            _imdbapi_py = d / "packages/envied/src/envied/core/providers/imdbapi.py"
-            _IMDBAPI_SENTINEL = "_check_imdbapi_reachable"
-            _IMDBAPI_OLD = "    def is_available(self) -> bool:\n        return True  # no key needed"
-            _IMDBAPI_NEW = (
-                "_imdbapi_reachable: Optional[bool] = None\n"
-                "\n"
-                "\n"
-                "def _check_imdbapi_reachable() -> bool:\n"
-                '    """Ping imdbapi.dev once per session and cache the result."""\n'
-                "    global _imdbapi_reachable\n"
-                "    if _imdbapi_reachable is not None:\n"
-                "        return _imdbapi_reachable\n"
-                "    try:\n"
-                '        r = requests.get("https://api.imdbapi.dev/search/titles?query=test&limit=1", timeout=4)\n'
-                "        _imdbapi_reachable = r.status_code < 500\n"
-                "    except Exception:\n"
-                "        _imdbapi_reachable = False\n"
-                "    return _imdbapi_reachable\n"
-                "\n"
-                "\n"
-                "class IMDBApiProvider(MetadataProvider):\n"
-                '    """IMDb metadata provider using imdbapi.dev (free, no API key)."""\n'
-                "\n"
-                '    NAME = "imdbapi"\n'
-                "    REQUIRES_KEY = False\n"
-                '    BASE_URL = "https://api.imdbapi.dev"\n'
-                "\n"
-                "    def is_available(self) -> bool:\n"
-                "        return _check_imdbapi_reachable()"
-            )
-            try:
-                if _imdbapi_py.exists():
-                    _imdbapi_txt = _imdbapi_py.read_text(encoding="utf-8")
-                    if _IMDBAPI_SENTINEL not in _imdbapi_txt:
-                        # Remove the class declaration lines that we're replacing
-                        _OLD_BLOCK = (
-                            "class IMDBApiProvider(MetadataProvider):\n"
-                            '    """IMDb metadata provider using imdbapi.dev (free, no API key)."""\n'
-                            "\n"
-                            '    NAME = "imdbapi"\n'
-                            "    REQUIRES_KEY = False\n"
-                            '    BASE_URL = "https://api.imdbapi.dev"\n'
-                            "\n"
-                            "    def is_available(self) -> bool:\n"
-                            "        return True  # no key needed"
-                        )
-                        if _OLD_BLOCK in _imdbapi_txt:
-                            _imdbapi_bak = _imdbapi_py.with_suffix(".py.bak")
-                            if not _imdbapi_bak.exists():
-                                _imdbapi_bak.write_text(_imdbapi_txt, encoding="utf-8")
-                            _imdbapi_py.write_text(_imdbapi_txt.replace(_OLD_BLOCK, _IMDBAPI_NEW), encoding="utf-8")
-                            self._log("Patched providers/imdbapi.py: added connectivity check.")
-                        else:
-                            self._log("providers/imdbapi.py: expected block not found — skipped.")
-                    else:
-                        self._log("providers/imdbapi.py already patched — skipped.")
-            except Exception as _ie:
-                self._log(f"Note: could not patch providers/imdbapi.py: {_ie}")
 
             # ── Patch providers/__init__.py: add OMDb, reorder providers ─────────
             # Default order is IMDBApi → SIMKL → TMDB which means every download
@@ -12228,7 +12159,7 @@ After each download, EnvyUI attempts to look up the title and embed metadata tag
 
 **IMDBApi error messages during downloads**
 
-You may occasionally see retry errors like `Retrying ... IMDBApi` in the download log. This means the free `api.imdbapi.dev` service is temporarily down. EnvyUI will automatically skip it and fall through to TMDB or OMDb — your download will complete normally. No action is required, but adding a TMDB or OMDb API key (below) ensures metadata is always found even when IMDBApi is unavailable.
+You may occasionally see retry errors like `Retrying ... IMDBApi` in the download log. This means the IMDBApi service is temporarily unreachable. EnvyUI will automatically skip it and fall through to TMDB or OMDb — your download will complete normally. No action is required, but adding a TMDB or OMDb API key (below) ensures metadata is always found even when IMDBApi is unavailable.
 
 **Adding a TMDB API key (recommended)**
 
@@ -12259,6 +12190,41 @@ EnvyUI tries providers in this order, skipping any that are unavailable:
 4. **SIMKL** — requires a free client ID, niche/anime focus (If you don't have SIMKL in your envied yaml file just add this line simkl_client_id: "" below omdb_api_key: "" 
 
 The coloured dots in the sidebar show which providers are currently active (green = available, red = unavailable or no key).
+
+---
+
+## Download Folder Structure
+
+EnvyUI automatically organises downloads into a folder structure compatible with Plex, Jellyfin, Kodi, and other media servers.
+
+**TV Series**
+
+```
+Downloads/
+  Death in Paradise (2011)/
+    Season 01/
+      Death in Paradise S01E01 Episode Name.mkv
+    Season 02/
+      Death in Paradise S02E01 Episode Name.mkv
+```
+
+The show folder always uses the **year the series first aired**, not the year of the individual episode. This means all seasons of a show land in the same top-level folder regardless of which season you download first.
+
+**Movies**
+
+```
+Downloads/
+  The Matrix (1999)/
+    The Matrix (1999).mkv
+```
+
+**How the year is determined**
+
+The premiere year is looked up automatically from the metadata providers (IMDBApi, TMDB, or OMDb) when a download starts. If no metadata match is found, the year shown by the service for that episode is used as a fallback. Adding a TMDB or OMDb API key (see Metadata Tagging above) ensures the correct year is found reliably.
+
+**Changing the folder and filename format**
+
+The templates that control folder names and filenames are configured in envied.yaml under `output_template`. Click **Envied Config** on the Home page to open envied.yaml. The available template variables and example formats are documented in the comments inside the file.
 
 ---
 
@@ -12294,7 +12260,7 @@ The coloured dots in the sidebar show which providers are currently active (gree
 
 ## Tips
 
-- Downloads are saved to the **EnvyCore/Downloads** folder by default. You can change this on the Install / Update page under Change Download Location.
+- Downloads are saved to the **EnvyCore/Downloads** folder by default, organised into show/movie subfolders automatically. You can change the download location on the Install / Update page under Change Download Location.
 - The **Log** tab records everything — check it first if something goes wrong.
 - Login credentials for each service go in **Envied Config** under the credentials section.
 - Cookie files go in the **Cookies** folder inside EnvyCore, named after the service (e.g. `PBS.txt`).
