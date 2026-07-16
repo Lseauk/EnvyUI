@@ -1,5 +1,28 @@
 # EnvyUI Changelog
 
+**EnvyUI v1.0.5**
+
+-- **Downloads now organised into Plex / Jellyfin / Kodi compatible folder structure**
+TV episodes go into `Show Name (Year)/Season 01/` and movies into `Movie Name (Year)/` automatically. Previously all files landed flat in the Downloads folder. The show folder always uses the series premiere year, so all seasons of a show stay in the same top-level folder regardless of which season you download first.
+
+-- **IMDB metadata now correctly tags downloaded files**
+Downloaded MKV files were not being tagged with their IMDB ID even when the metadata lookup found a match. The IMDB ID was being returned by the provider but silently discarded. This is now fixed.
+
+-- **TV series no longer rejected by metadata year filter when downloading later seasons**
+Searching metadata for a later season episode (e.g. Death in Paradise S03 from 2014) could cause the series to be rejected because the episode air year didn't match the series premiere year (2011). The year filter now only applies to movies.
+
+-- **Folder names no longer use dots instead of spaces**
+In some cases folder names were produced with dots (`Tip.Toe`) instead of spaces (`Tip Toe`). The formatter now defaults to spaces correctly.
+
+-- **Trailing space in folder name no longer crashes downloads**
+When a title had no year, the folder name template could produce a trailing space (e.g. `Vera `) which Windows cannot create as a folder, crashing the download. Folder names are now trimmed.
+
+-- **Help Page** New Download Folder Structure section explaining the TV and movie folder layouts and how to customise them via Envied Config.
+
+-- **Service updates (synced from upstream)**
+NINE: improved subtitle track filtering and HTTPS source selection. TPTV: terminal search (`envied search TPTV`) now works correctly. STV: updated to v1.0.4. TEN: fixed missing import that could cause errors.
+
+
 **EnvyUI v1.0.4**
 
 -- **Build Exe** Reworked launcher approach
