@@ -1384,6 +1384,8 @@ class dl:
             latest_episode_id = f"{latest_ep.season}x{latest_ep.number}"
             self.log.info(f"Latest episode mode: Selecting S{latest_ep.season:02}E{latest_ep.number:02}")
 
+        show_folder: Optional[str] = None
+
         for i, title in enumerate(titles):
             if isinstance(title, Episode) and latest_episode and latest_episode_id:
                 # If --latest-episode is set, only process the latest episode
@@ -1408,6 +1410,10 @@ class dl:
                     )
                     if result and result.title and providers.fuzzy_match(result.title, title.title):
                         self.tmdb_id = result.external_ids.tmdb_id
+                        if not self.imdb_id and result.external_ids.imdb_id:
+                            self.imdb_id = result.external_ids.imdb_id
+                        if result.year:
+                            self.series_start_year = result.year
                         tmdb_title = result.title
                         self.search_source = result.source
                     else:
@@ -2697,7 +2703,20 @@ class dl:
                         audio_codec_suffix = muxed_audio_codecs.get(muxed_path)
 
                         if not no_folder and isinstance(title, (Episode, Song)):
-                            final_dir /= title.get_filename(media_info, show_service=not no_source, folder=True)
+                            if isinstance(title, Episode):
+                                if show_folder is None:
+                                    original_year = title.year
+                                    series_year = getattr(self, "series_start_year", None)
+                                    if series_year:
+                                        title.year = series_year
+                                    show_folder = title.get_filename(media_info, show_service=not no_source, folder=True)
+                                    title.year = original_year
+                                final_dir /= show_folder
+                                final_dir /= f"Season {title.season:02}"
+                            else:
+                                final_dir /= title.get_filename(media_info, show_service=not no_source, folder=True)
+                        elif not no_folder and isinstance(title, Movie):
+                            final_dir /= title.get_filename(media_info, show_service=False, folder=True)
 
                         final_dir.mkdir(parents=True, exist_ok=True)
                         final_path = final_dir / f"{final_filename}{muxed_path.suffix}"
