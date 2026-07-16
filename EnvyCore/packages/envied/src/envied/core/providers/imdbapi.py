@@ -7,38 +7,22 @@ import requests
 
 from envied.core.providers._base import ExternalIds, MetadataProvider, MetadataResult, _clean, fuzzy_match
 
-# Mapping from our kind ("movie"/"tv") to imdbapi.dev title types
+# Mapping from our kind ("movie"/"tv") to IMDxAPI title types
 KIND_TO_TYPES: dict[str, list[str]] = {
     "movie": ["movie"],
     "tv": ["tvSeries", "tvMiniSeries"],
 }
 
-# Session-level connectivity cache: None = unchecked, True/False = result
-_imdbapi_reachable: Optional[bool] = None
-
-
-def _check_imdbapi_reachable() -> bool:
-    """Ping imdbapi.dev once per session and cache the result."""
-    global _imdbapi_reachable
-    if _imdbapi_reachable is not None:
-        return _imdbapi_reachable
-    try:
-        r = requests.get("https://api.imdbapi.dev/search/titles?query=test&limit=1", timeout=4)
-        _imdbapi_reachable = r.status_code < 500
-    except Exception:
-        _imdbapi_reachable = False
-    return _imdbapi_reachable
-
 
 class IMDBApiProvider(MetadataProvider):
-    """IMDb metadata provider using imdbapi.dev (free, no API key)."""
+    """IMDb metadata provider using IMDxAPI (api.tiffara.com, free, no API key)."""
 
     NAME = "imdbapi"
     REQUIRES_KEY = False
-    BASE_URL = "https://api.imdbapi.dev"
+    BASE_URL = "https://api.tiffara.com"
 
     def is_available(self) -> bool:
-        return _check_imdbapi_reachable()
+        return True  # no key needed
 
     def search(self, title: str, year: Optional[int], kind: str) -> Optional[MetadataResult]:
         self.log.debug("Searching IMDBApi for %r (%s, %s)", title, kind, year)
@@ -79,9 +63,9 @@ class IMDBApiProvider(MetadataProvider):
                     continue
                 ratio = SequenceMatcher(None, _clean(title), _clean(name)).ratio()
                 if ratio > best_ratio:
-                    # If year provided, prefer matches within 1 year
+                    # For movies, filter by year (episode air year is unreliable for TV)
                     candidate_year = candidate.get("startYear")
-                    if year and candidate_year and abs(year - candidate_year) > 1:
+                    if kind == "movie" and year and candidate_year and abs(year - candidate_year) > 1:
                         continue
                     best_ratio = ratio
                     best_match = candidate
