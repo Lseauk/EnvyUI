@@ -190,8 +190,25 @@ class TPTV(Service):
         self.authorization = tokens
 
     def search(self) -> Generator[SearchResult, None, None]:
-        print(f"Searching not implemented in Envied for TPTVencore. Please use VineFeeder instead.")
-        return None
+        search_term = self.title.replace(" ", "+")
+        response = self.session.get(self.config["endpoints"]["search"].format(query=search_term))
+        response.raise_for_status()
+        results = json.loads(response.content.decode("utf-8"))
+
+        for result in results["data"]:
+            url = result['video']['playback'].replace("api/core/play", "playback")
+            title = result['title']
+            synopsis = result['description'].replace('\n', ' ')
+            label = result["subtype"]
+            id = result["video"]["playback"].replace("api/core/play", "playback")
+
+            yield SearchResult(
+                id_=id,
+                title=title,
+                description=synopsis,
+                label=label,
+                url=url,
+            )
 
     def get_titles(self) -> Union[Movies, Series]:
         data = self.get_data(self.title)
