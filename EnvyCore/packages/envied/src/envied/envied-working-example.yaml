@@ -8,8 +8,11 @@ set_terminal_bg: false
 muxing:
   set_title: false
 
-# shakapackager or mp4decrypt
-decryption: shakapackager
+# shaka or mp4decrypt (can be a map with per-service overrides)
+decryption:
+  default: shaka
+  ALL4: mp4decrypt
+  TPTV: mp4decrypt
 
 # Custom output templates for filenames
 # Configure output_template in your envied.yaml to control filename format.
@@ -38,6 +41,9 @@ output_template:
   movies: '{title} ({year})'
   series: '{title} {season_episode} {episode_name?}'
   songs: '{track_number}. {title}'
+  folder:
+    movies: '{title} ({year})'
+    series: '{title} ({year?})'
   #
   # Minimal naming (basic info only)
   # movies: '{title}.{year}.{quality}'
@@ -183,6 +189,12 @@ filenames:
 # API key for The Movie Database (TMDB)
 tmdb_api_key: ""
 
+# API key for OMDb (Open Movie Database) — free tier at omdbapi.com
+omdb_api_key: ""
+
+# Client ID for SIMKL (optional — anime/niche metadata fallback, free at simkl.com/settings/developer)
+simkl_client_id: ""
+
 #conversion_method:
 # - auto (default): Smart routing - subby for WebVTT/SAMI, pycaption for others
 # - subby: Always use subby with advanced processing
@@ -190,7 +202,7 @@ tmdb_api_key: ""
 # - subtitleedit: Prefer SubtitleEdit when available, fall back to pycaption
 # - pysubs2: Use pysubs2 library (supports SRT/SSA/ASS/WebVTT/TTML/SAMI/MicroDVD/MPL2/TMP)
 subtitle:
-  conversion_method: auto
+  conversion_method: pysubs2
   # sdh_method: Method to use for SDH (hearing impaired) stripping
   # - auto (default): Try subby (SRT only), then SubtitleEdit (if available), then subtitle-filter
   # - subby: Use subby library (SRT only)
