@@ -2,6 +2,10 @@
 
 **EnvyUI v1.0.5**
 
+**PLEASE NOTE:**
+
+If you are upgrading from a previous version after unzipping the new release please run the Install Envy Tools for any new patches to be applied.
+
 -- **Downloads now organised into Plex / Jellyfin / Kodi compatible folder structure**
 TV episodes go into `Show Name (Year)/Season 01/` and movies into `Movie Name (Year)/` automatically. Previously all files landed flat in the Downloads folder. The show folder always uses the series premiere year, so all seasons of a show stay in the same top-level folder regardless of which season you download first.
 
