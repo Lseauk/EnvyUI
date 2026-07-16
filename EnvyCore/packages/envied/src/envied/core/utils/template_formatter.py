@@ -109,10 +109,11 @@ class TemplateFormatter:
             dot_count = separator_text.count(".")
             space_count = separator_text.count(" ")
 
-            if space_count > dot_count:
-                result = sanitize_filename(result, spacer=" ")
-            else:
+            if dot_count > 0 and dot_count >= space_count:
                 result = sanitize_filename(result, spacer=".")
+            else:
+                result = sanitize_filename(result, spacer=" ")
+            result = result.strip(" .")
 
             if not result or result.isspace():
                 log.warning("Template formatting resulted in empty filename, using fallback")
