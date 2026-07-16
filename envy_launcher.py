@@ -7547,6 +7547,28 @@ class InstallWorker(QThread):
                     self._log(status)
                     yaml_text, status = _patch_dir(yaml_text, "cookies", cookies_abs)
                     self._log(status)
+
+                    # ── Patch output_template folder block (added v1.0.5) ──────
+                    # Existing installs won't have the folder: subsection — insert
+                    # it after the songs: line if it isn't already present.
+                    if "folder:" not in yaml_text and "output_template:" in yaml_text:
+                        _folder_block = (
+                            "  folder:\n"
+                            "    movies: '{title} ({year})'\n"
+                            "    series: '{title} ({year?})'\n"
+                        )
+                        _songs_pat = _re.compile(
+                            r"^([ \t]*songs:[ \t]*['\"].+?['\"][ \t]*)$",
+                            _re.MULTILINE,
+                        )
+                        _m = _songs_pat.search(yaml_text)
+                        if _m:
+                            insert_at = _m.end()
+                            yaml_text = yaml_text[:insert_at] + "\n" + _folder_block + yaml_text[insert_at:]
+                            self._log("Patched envied.yaml: added output_template folder block.")
+                        else:
+                            self._log("Warning: could not find songs: line to insert folder block.")
+
                     dst.write_text(yaml_text, encoding="utf-8")
                 except Exception as _e:
                     self._log(f"Warning: could not patch yaml paths: {_e}")
@@ -11813,7 +11835,7 @@ class EnvyLauncher(QMainWindow):
                 "and click Backup Settings to save a timestamped copy of envied.yaml\n"
                 "• Any cookie files you have in EnvyCore\\Cookies\\\n\n"
                 "The virtual environment will be rebuilt during this install. "
-                "Your envied.yaml will not be overwritten, but it is always safer "
+                "Your envied.yaml will not be overwritten but maybe patched, but it is always safer "
                 "to have a backup before proceeding.\n\n"
                 "Have you backed up your settings?"
             )
